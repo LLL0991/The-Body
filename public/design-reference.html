@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+  <title>The Body — 移动端设计参考</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #2F2F2F;
+      color: #fafafa;
+      min-height: 100vh;
+      max-width: 390px;
+      margin: 0 auto;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+      padding: 0 16px;
+      border-bottom: 1px solid #404040;
+      background: #2F2F2F;
+    }
+    .header-icon { width: 40px; height: 40px; background: #404040; border-radius: 10px; }
+    .header-brand { display: flex; align-items: center; gap: 8px; }
+    .header-logo { width: 24px; height: 24px; background: #FF3C3C; border-radius: 6px; }
+    .header-title { font-size: 17px; font-weight: 600; color: #fafafa; }
+    .main { padding: 24px 20px; }
+    .hero { margin-bottom: 20px; }
+    .hero h1 { font-size: 28px; font-weight: 700; color: #fafafa; }
+    .hero p { margin-top: 6px; font-size: 13px; color: #a1a1aa; }
+    .cards { display: flex; flex-direction: column; gap: 12px; }
+    .card {
+      background: #3a3a3a;
+      border: 1px solid #404040;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card-icon {
+      width: 40px; height: 40px;
+      background: rgba(255,60,60,0.2);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 18px; color: #FF3C3C;
+      margin-bottom: 12px;
+    }
+    .card h2 { font-size: 16px; font-weight: 600; color: #fafafa; }
+    .card p { margin-top: 4px; font-size: 14px; color: #a1a1aa; }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-icon"></div>
+    <div class="header-brand">
+      <div class="header-logo" aria-hidden="true"></div>
+      <span class="header-title">The Body</span>
+    </div>
+    <div class="header-icon"></div>
+  </header>
+  <main class="main">
+    <section class="hero">
+      <h1>今日训练</h1>
+      <p>时尚健美 · 深色模式基础框架</p>
+    </section>
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">1</div>
+        <h2>模块 1</h2>
+        <p>在此放置你的内容区块</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">2</div>
+        <h2>模块 2</h2>
+        <p>在此放置你的内容区块</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">3</div>
+        <h2>模块 3</h2>
+        <p>在此放置你的内容区块</p>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

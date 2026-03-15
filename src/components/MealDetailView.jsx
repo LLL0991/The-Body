@@ -1,0 +1,601 @@
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
+import { ArrowLeft, CheckCircle, Trash2, ChevronDown, Camera, ScanLine, Mic, Loader2 } from 'lucide-react'
+import { QUICK_IDS_REPLACE_NANJU } from '../data/foodDatabase'
+import { getDisplayGrams, displayToStoredGrams } from '../data/mealStore'
+import { parseMealInput } from '../services/nutrientParser'
+
+const NANJU_ID = 'nanju-rice-noodle'
+
+/**
+ * 二级记录页：点击一级餐次图标进入。
+ * 快捷食材库：按餐次智能推荐、横向/多行展示；点击可替换南巨米粉（确认）；熟重默认开启。
+ */
+export function MealDetailView({
+  meal,
+  mealIndex,
+  onBack,
+  useCookedWeight,
+  setUseCookedWeight,
+  setMealIngredientGrams,
+  setMealConfirmed,
+  removeMealIngredient,
+  applySuperBowl,
+  addOrReplaceQuickIngredient,
+  replaceNanjuWithIngredient,
+  quickIngredients,
+  getRecommendedIdsForMeal,
+  getMealMacros,
+  targets,
+  consumed,
+  meals,
+  parseFoodTextAndRecord,
+  recordAiNutrientResult,
+}) {
+  const mealMacros = getMealMacros(mealIndex)
+  const unconfirmedCount = meals?.filter((m) => !m.confirmed)?.length || 1
+  const remaining = useMemo(() => ({
+    protein: Math.max(0, (targets?.proteinTarget ?? 0) - (consumed?.protein ?? 0)),
+    carbs: Math.max(0, (targets?.carbsTarget ?? 0) - (consumed?.carbs ?? 0)),
+    fat: Math.max(0, (targets?.fatTarget ?? 0) - (consumed?.fat ?? 0)),
+  }), [targets, consumed])
+  const suggestedPerMeal = useMemo(() => ({
+    protein: unconfirmedCount > 0 ? Math.round((remaining.protein / unconfirmedCount) * 10) / 10 : 0,
+    carbs: unconfirmedCount > 0 ? Math.round((remaining.carbs / unconfirmedCount) * 10) / 10 : 0,
+    fat: unconfirmedCount > 0 ? Math.round((remaining.fat / unconfirmedCount) * 10) / 10 : 0,
+  }), [remaining, unconfirmedCount])
+  const dailyProgress = {
+    carbs: (targets?.carbsTarget ?? 0) > 0 ? Math.min((consumed?.carbs ?? 0) / targets.carbsTarget, 1) : 0,
+    protein: (targets?.proteinTarget ?? 0) > 0 ? Math.min((consumed?.protein ?? 0) / targets.proteinTarget, 1) : 0,
+    fat: (targets?.fatTarget ?? 0) > 0 ? Math.min((consumed?.fat ?? 0) / targets.fatTarget, 1) : 0,
+  }
+  const hasRice = meal.ingredients.some((i) => i.id === 'rice-cooked')
+  const hasNanju = meal.ingredients.some((i) => i.id === NANJU_ID)
+  const [editingId, setEditingId] = useState(null)
+  const [editValue, setEditValue] = useState('')
+  /** 待确认替换：点击「主食类」快捷食材且当前有南巨米粉时，先弹出应用内确认 */
+  const [pendingReplace, setPendingReplace] = useState(null)
+  const [quickIngredientsCollapsed, setQuickIngredientsCollapsed] = useState(true)
+  /** AI 自然语言输入，如「我吃了一碗云阿蛮米线」 */
+  const [aiTextInput, setAiTextInput] = useState('')
+  const [aiParseError, setAiParseError] = useState('')
+  const [aiAdjustment, setAiAdjustment] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
+  const [cameraPermission, setCameraPermission] = useState(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [speechSupport, setSpeechSupport] = useState(false)
+  const [speechLang, setSpeechLang] = useState('zh-CN')
+  const mediaRecorderRef = useRef(null)
+  const chunksRef = useRef([])
+  const imageInputRef = useRef(null)
+  const VOICE_AND_IMAGE_API = import.meta.env.VITE_VOICE_AND_IMAGE_API ?? ''
+
+  useEffect(() => {
+    setSpeechSupport(!!navigator.mediaDevices?.getUserMedia)
+    return () => {
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop())
+        mediaRecorderRef.current = null
+      }
+    }
+  }, [])
+
+  const toggleSpeechRecognition = useCallback(() => {
+    if (!speechSupport || aiLoading) return
+    if (isRecording) {
+      // 第二次点击：停止录音并上传
+      setIsRecording(false)
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current.stop()
+      }
+      return
+    }
+    // 第一次点击：开始录音
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        const mr = new MediaRecorder(stream)
+        chunksRef.current = []
+        mr.ondataavailable = (e) => {
+          if (e.data?.size > 0) chunksRef.current.push(e.data)
+        }
+        mr.onstop = async () => {
+          mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop())
+          mediaRecorderRef.current = null
+          const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+          chunksRef.current = []
+          if (blob.size === 0) return
+          try {
+            setAiLoading(true)
+            setAiParseError('')
+            const fd = new FormData()
+            fd.append('file', blob, 'voice.webm')
+            const resp = await fetch((VOICE_AND_IMAGE_API ? VOICE_AND_IMAGE_API + '/' : '') + 'api/voice-to-text', {
+              method: 'POST',
+              body: fd,
+            })
+            const data = await resp.json()
+            if (!resp.ok) {
+              throw new Error(data?.error || '语音识别失败')
+            }
+            const text = (data.text || '').trim()
+            if (text) setAiTextInput((prev) => (prev ? prev + ' ' + text : text))
+          } catch (err) {
+            setAiParseError(err?.message || '语音识别失败')
+          } finally {
+            setAiLoading(false)
+          }
+        }
+        mediaRecorderRef.current = mr
+        setIsRecording(true)
+        mr.start()
+      })
+      .catch(() => {
+        setAiParseError('无法访问麦克风，请检查浏览器权限')
+      })
+  }, [speechSupport, aiLoading])
+
+  const handleAiTextSubmit = useCallback(async () => {
+    const text = aiTextInput.trim()
+    setAiParseError('')
+    setAiAdjustment('')
+    if (!text) return
+    if (typeof recordAiNutrientResult !== 'function' || typeof parseFoodTextAndRecord !== 'function') return
+
+    setAiLoading(true)
+    try {
+      const result = await parseMealInput(text, meal.name)
+      recordAiNutrientResult(mealIndex, result, text)
+      setAiTextInput('')
+      if (result.adjustment) setAiAdjustment(result.adjustment)
+    } catch (err) {
+      const msg = err?.message ?? String(err ?? '未知错误')
+      const isNetwork = /fetch|network|cors|跨域/i.test(msg)
+      const fallback = parseFoodTextAndRecord(text, mealIndex)
+      if (fallback) {
+        setAiTextInput('')
+      } else {
+        setAiParseError(isNetwork ? `${msg}（若为跨域，可用 Vite 代理或后端转发 API）` : msg)
+      }
+    } finally {
+      setAiLoading(false)
+    }
+  }, [aiTextInput, mealIndex, meal.name, parseFoodTextAndRecord, recordAiNutrientResult])
+
+  const requestCameraPermission = useCallback(() => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraPermission('unsupported')
+      return
+    }
+    navigator.mediaDevices
+      .getUserMedia({ video: true })
+      .then((stream) => {
+        stream.getTracks().forEach((t) => t.stop())
+        setCameraPermission('granted')
+      })
+      .catch(() => setCameraPermission('denied'))
+  }, [])
+
+  const handleImageClick = useCallback(() => {
+    setAiParseError('')
+    if (imageInputRef.current) imageInputRef.current.click()
+  }, [])
+
+  const handleImageChange = useCallback(
+    async (e) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+      if (!/^image\/(jpeg|png|webp|gif)$/i.test(file.type)) {
+        setAiParseError('请选择 JPEG/PNG/WebP/GIF 图片')
+        return
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        setAiParseError('图片请小于 5MB')
+        return
+      }
+      setAiParseError('')
+      setAiLoading(true)
+      try {
+        const formData = new FormData()
+        formData.append('image', file)
+        const resp = await fetch((VOICE_AND_IMAGE_API ? VOICE_AND_IMAGE_API + '/' : '') + 'api/image-to-meal-description', {
+          method: 'POST',
+          body: formData,
+        })
+        const data = await resp.json().catch(() => ({}))
+        if (!resp.ok) throw new Error(data?.error || `识别失败 ${resp.status}`)
+        const description = (data?.text || '').trim()
+        if (!description) throw new Error('未识别到餐食描述')
+        setAiTextInput(description)
+        const result = await parseMealInput(description, meal.name)
+        if (typeof recordAiNutrientResult === 'function') {
+          recordAiNutrientResult(mealIndex, result, description)
+        }
+        setAiTextInput('')
+      } catch (err) {
+        setAiParseError(err?.message || '照片识别失败')
+      } finally {
+        setAiLoading(false)
+        if (imageInputRef.current) imageInputRef.current.value = ''
+      }
+    },
+    [VOICE_AND_IMAGE_API, meal.name, mealIndex, recordAiNutrientResult]
+  )
+
+  const recommendedIds = useMemo(() => getRecommendedIdsForMeal(meal.name) || [], [getRecommendedIdsForMeal, meal.name])
+  const recommended = useMemo(() => quickIngredients.filter((q) => recommendedIds.includes(q.id)), [quickIngredients, recommendedIds])
+  const others = useMemo(() => quickIngredients.filter((q) => !recommendedIds.includes(q.id)), [quickIngredients, recommendedIds])
+
+  const handleQuickIngredientClick = (q) => {
+    const canReplaceNanju = QUICK_IDS_REPLACE_NANJU.some((id) => q.id === id || q.id.startsWith(id + '-'))
+    if (hasNanju && canReplaceNanju) {
+      setPendingReplace({ ingredient: { ...q } })
+      return
+    }
+    addOrReplaceQuickIngredient(mealIndex, { ...q })
+  }
+
+  const confirmReplace = () => {
+    if (pendingReplace?.ingredient) {
+      replaceNanjuWithIngredient(mealIndex, pendingReplace.ingredient)
+      setPendingReplace(null)
+    }
+  }
+
+  const cancelReplace = () => {
+    if (pendingReplace?.ingredient) {
+      addOrReplaceQuickIngredient(mealIndex, pendingReplace.ingredient)
+    }
+    setPendingReplace(null)
+  }
+
+  const startEdit = (ing) => {
+    setEditingId(ing.id)
+    setEditValue(String(getDisplayGrams(ing, useCookedWeight)))
+  }
+
+  const saveEdit = () => {
+    if (editingId != null) {
+      const ing = meal.ingredients.find((i) => i.id === editingId)
+      const displayVal = parseFloat(editValue) || 0
+      const storedGrams = ing ? displayToStoredGrams(ing, displayVal, useCookedWeight) : displayVal
+      setMealIngredientGrams(mealIndex, editingId, storedGrams)
+      setEditingId(null)
+    }
+  }
+
+  return (
+    <div className="relative flex flex-col gap-4">
+      {/* 应用内确认：是否用该食材替换南巨米粉 */}
+      {pendingReplace?.ingredient && (
+        <div
+          className="fixed inset-0 z-20 flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+          onClick={cancelReplace}
+        >
+          <div
+            className="w-full max-w-[320px] rounded-xl border border-[#404040] p-5"
+            style={{ backgroundColor: '#393939' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="mb-4 text-[14px] leading-relaxed text-zinc-200">
+              是否用「{pendingReplace.ingredient.name}」替换「南巨米粉」？
+            </p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={cancelReplace}
+                className="flex-1 rounded-lg border border-[#404040] py-2.5 text-[13px] font-medium text-zinc-300"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={confirmReplace}
+                className="flex-1 rounded-lg py-2.5 text-[13px] font-semibold text-white"
+                style={{ backgroundColor: '#FF3D3C' }}
+              >
+                确定替换
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-[#404040] text-zinc-300 hover:bg-[#404040]"
+        >
+          <ArrowLeft className="h-5 w-5" />
+        </button>
+        <h2 className="text-lg font-semibold text-zinc-100">{meal.name}</h2>
+      </div>
+
+      {/* 拍照/上传识别：选图后调用视觉模型得到描述，再解析并写入当前餐次 */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleImageClick}
+          disabled={aiLoading}
+          className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-dashed border-[#525252] py-4 text-[14px] text-zinc-400 transition hover:border-[#737373] hover:text-zinc-300 disabled:opacity-60"
+          style={{ backgroundColor: 'rgba(63,63,63,0.5)' }}
+        >
+          {aiLoading ? (
+            <Loader2 className="h-5 w-5 animate-spin" />
+          ) : (
+            <Camera className="h-5 w-5" />
+          )}
+          <span>拍照/上传识别</span>
+        </button>
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={handleImageChange}
+        />
+        <button
+          type="button"
+          onClick={requestCameraPermission}
+          className="rounded-lg border border-[#404040] px-2 py-1.5 text-[12px] text-zinc-500"
+          title="检测相机权限（可选）"
+        >
+          相机
+        </button>
+      </div>
+
+      {/* 自然语言输入：如「我吃了两块全家鸡胸」；小话筒长按说话，中/英识别 */}
+      {typeof parseFoodTextAndRecord === 'function' && (
+        <div className="flex gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-[#404040] bg-[#393939] px-2 py-1.5">
+            <input
+              type="text"
+              value={aiTextInput}
+              onChange={(e) => { setAiTextInput(e.target.value); setAiParseError(''); setAiAdjustment('') }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handleAiTextSubmit()
+                }
+              }}
+              placeholder="我吃了两块全家鸡胸"
+              className="min-w-0 flex-1 bg-transparent px-1.5 py-1 text-[13px] text-zinc-200 placeholder:text-zinc-500"
+            />
+            {speechSupport ? (
+              <button
+                type="button"
+                onClick={toggleSpeechRecognition}
+                className="flex items-center justify-center rounded-full p-2 transition"
+                style={{
+                  backgroundColor: isRecording ? 'rgba(239,68,68,0.25)' : 'transparent',
+                  color: isRecording ? '#f87171' : '#a1a1aa',
+                }}
+                title={isRecording ? '点击停止并结束录音' : '点击开始语音记录（中文/英文）'}
+              >
+                <Mic className="h-4 w-4" />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setSpeechLang((l) => (l === 'zh-CN' ? 'en-US' : 'zh-CN'))}
+              className="rounded px-1.5 py-1 text-[11px] text-zinc-500"
+              title={speechLang === 'zh-CN' ? '当前中文，点击切英文' : '当前英文，点击切中文'}
+            >
+              {speechLang === 'zh-CN' ? '中' : 'En'}
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={handleAiTextSubmit}
+            disabled={aiLoading}
+            className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium text-white disabled:opacity-60"
+            style={{ backgroundColor: '#404040' }}
+          >
+            {aiLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanLine className="h-4 w-4" />}
+            记录
+          </button>
+        </div>
+      )}
+      {aiParseError && (
+        <p className="text-[12px] text-amber-400">{aiParseError}</p>
+      )}
+      {aiAdjustment && (
+        <p className="text-[12px] text-zinc-400">说明：{aiAdjustment}</p>
+      )}
+
+      {/* 今日摄入进度（与首页仪表盘一致）+ 今日剩余 + 本餐建议 + 熟重开关 */}
+      <div className="rounded-xl border border-[#404040] p-4" style={{ backgroundColor: '#393939' }}>
+        <p className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">今日摄入 · 与首页同步</p>
+        <div className="mb-3 grid grid-cols-3 gap-3">
+          {[
+            { key: 'carbs', label: '碳水', consumed: consumed?.carbs ?? 0, target: targets?.carbsTarget ?? 0, remaining: remaining.carbs, mealVal: mealMacros.carbs, suggested: suggestedPerMeal.carbs, color: '#86efac', track: 'rgba(134,239,172,0.25)' },
+            { key: 'protein', label: '蛋白质', consumed: consumed?.protein ?? 0, target: targets?.proteinTarget ?? 0, remaining: remaining.protein, mealVal: mealMacros.protein, suggested: suggestedPerMeal.protein, color: '#FC8D87', track: 'rgba(252,141,135,0.25)' },
+            { key: 'fat', label: '脂肪', consumed: consumed?.fat ?? 0, target: targets?.fatTarget ?? 0, remaining: remaining.fat, mealVal: mealMacros.fat, suggested: suggestedPerMeal.fat, color: '#FBCB9B', track: 'rgba(251,203,155,0.25)' },
+          ].map(({ key, label, consumed: c, target, remaining: rem, mealVal, suggested, color, track }) => (
+            <div key={key} className="min-w-0">
+              <p className="mb-1 truncate text-[11px] text-zinc-500">{label}</p>
+              <div className="mb-1 h-1.5 w-full overflow-hidden rounded-full" style={{ backgroundColor: track }}>
+                <div
+                  className="h-full rounded-full transition-all"
+                  style={{ width: `${Math.min((target > 0 ? c / target : 0) * 100, 100)}%`, backgroundColor: color }}
+                />
+              </div>
+              <p className="text-[10px] tabular-nums text-zinc-400">
+                {Math.round(c)}/{Math.round(target)}g 剩{Math.round(rem)}g
+              </p>
+              <p className="mt-0.5 text-[10px] tabular-nums text-zinc-500">
+                本餐{Math.round(mealVal)}g 建议≈{Math.round(suggested)}g
+              </p>
+            </div>
+          ))}
+        </div>
+        {remaining.carbs < 0 && (
+          <p className="mb-2 rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-200/90">
+            今日碳水已超标，本餐建议低碳。
+          </p>
+        )}
+        {remaining.carbs >= 0 && remaining.carbs < 25 && (
+          <p className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] text-amber-200/90">
+            碳水余额较少，本餐建议低碳：优先蛋白质与蔬菜，主食少或省略。
+          </p>
+        )}
+        <div className="flex items-center justify-between border-t border-[#404040] pt-3">
+          <span className="text-[12px] text-zinc-500">重量显示</span>
+          <button
+            type="button"
+            onClick={() => setUseCookedWeight(!useCookedWeight)}
+            className="rounded-full px-3 py-1.5 text-[12px] transition"
+            style={{
+              backgroundColor: useCookedWeight ? '#FF3D3C' : '#404040',
+              color: '#fff',
+            }}
+          >
+            {useCookedWeight ? '熟重' : '生重'}
+          </button>
+        </div>
+      </div>
+
+      {/* 食材列表：名称 + 克数可编辑 */}
+      <div className="rounded-xl border border-[#404040] overflow-hidden">
+        <div className="bg-[#393939] px-3 py-2 text-[11px] uppercase tracking-wide text-zinc-500">
+          食材与克数
+        </div>
+        <ul className="divide-y divide-[#404040]">
+          {meal.ingredients.map((ing) => (
+            <li
+              key={ing.id}
+              className="flex items-center justify-between gap-2 px-4 py-3"
+              style={{ backgroundColor: '#3a3a3a' }}
+            >
+              <span className="min-w-0 flex-1 text-[13px] text-zinc-200">{ing.name}</span>
+              <div className="flex shrink-0 items-center gap-2">
+                {editingId === ing.id ? (
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onBlur={saveEdit}
+                    onKeyDown={(e) => e.key === 'Enter' && saveEdit()}
+                    className="w-20 rounded border border-[#404040] bg-[#2a2a2a] px-2 py-1.5 text-right text-[13px] text-zinc-100"
+                    autoFocus
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => startEdit(ing)}
+                    className="rounded px-2 py-1 text-[13px] font-medium text-[#FF3D3C] hover:bg-[#404040]"
+                  >
+                    {Math.round(getDisplayGrams(ing, useCookedWeight))}g
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeMealIngredient(mealIndex, ing.id)}
+                  className="rounded p-1.5 text-zinc-400 hover:bg-[#404040] hover:text-zinc-200"
+                  title="删除"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* 超级碗/标准分量：150g 碳水 + 35g 蛋白质 */}
+      {hasRice && (
+        <button
+          type="button"
+          onClick={() => applySuperBowl(mealIndex)}
+          className="w-full rounded-xl border border-[#FF3D3C] py-3 text-[13px] font-medium text-[#FF3D3C] transition hover:bg-[#FF3D3C] hover:text-white"
+        >
+          超级碗 / 标准分量
+        </button>
+      )}
+
+      {/* 快捷食材库：本餐推荐 + 更多食材，可折叠 */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setQuickIngredientsCollapsed((c) => !c)}
+          className="mb-2 flex w-full items-center gap-1.5 text-[12px] text-zinc-500"
+        >
+          <span>快捷食材库</span>
+          <ChevronDown
+            className="h-4 w-4 shrink-0 transition-transform"
+            style={{
+              transform: quickIngredientsCollapsed ? 'rotate(-90deg)' : 'none',
+              color: '#FF3D3C',
+            }}
+          />
+        </button>
+        {!quickIngredientsCollapsed && recommended.length > 0 && (
+          <div className="mb-2">
+            <p className="mb-1.5 text-[11px] uppercase tracking-wide text-zinc-600">本餐推荐</p>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {recommended.map((q) => (
+                <button
+                  key={q.id}
+                  type="button"
+                  onClick={() => handleQuickIngredientClick(q)}
+                  className="shrink-0 rounded-xl border border-[#BEF264] bg-[#2a3320] px-3 py-2.5 text-[13px] text-[#BEF264] transition hover:bg-[#404040]"
+                >
+                  {q.name}
+                  <span className="ml-1 text-zinc-500">约{q.grams}g</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {!quickIngredientsCollapsed && (
+        <div>
+          <p className="mb-1.5 text-[11px] uppercase tracking-wide text-zinc-600">
+            {recommended.length > 0 ? '更多食材' : '全部'}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {others.map((q) => (
+              <button
+                key={q.id}
+                type="button"
+                onClick={() => handleQuickIngredientClick(q)}
+                className="shrink-0 rounded-xl border border-[#404040] px-3 py-2.5 text-[13px] text-zinc-200 transition hover:border-[#FF3D3C] hover:bg-[#404040]"
+              >
+                {q.name}
+                <span className="ml-1 text-zinc-500">约{q.grams}g</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        )}
+      </div>
+
+      {/* 打卡 / 确认已摄入：点击计入仪表盘，再点一次取消打卡 */}
+      <div className="pt-2">
+        {meal.confirmed ? (
+          <button
+            type="button"
+            onClick={() => setMealConfirmed(mealIndex, false)}
+            className="flex w-full items-center justify-center gap-2 rounded-xl py-4 text-[14px] font-medium transition hover:opacity-90"
+            style={{ backgroundColor: '#2a4a2a', color: '#86efac' }}
+            title="点击取消打卡"
+          >
+            <CheckCircle className="h-5 w-5" />
+            已打卡（点击取消）
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setMealConfirmed(mealIndex, true)}
+            className="w-full rounded-xl py-4 text-[14px] font-semibold text-white transition"
+            style={{ backgroundColor: '#FF3D3C' }}
+          >
+            确认已摄入
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}

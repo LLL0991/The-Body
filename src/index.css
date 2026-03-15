@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  body {
+    min-height: 100vh;
+    background-color: #2F2F2F;
+    color: #fafafa;
+  }
+}
