@@ -209,10 +209,11 @@ app.post('/api/llm/chat/completions', async (req, res) => {
 })
 
 // ---------- 生产环境：托管前端静态 + SPA 回退 ----------
+// 用 use 做 SPA 回退，避免 Express 5 的 app.get('*') / path-to-regexp 报错
 if (isProduction) {
   app.use(express.static(DIST_PATH, { index: false }))
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/')) return next()
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api/')) return next()
     res.sendFile(path.join(DIST_PATH, 'index.html'), (err) => {
       if (err) next(err)
     })
