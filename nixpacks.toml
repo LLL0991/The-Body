@@ -1,0 +1,12 @@
+# Railway 默认用 Nixpacks 构建，在此写死命令，避免在网页里输入反引号导致报错
+[phases.setup]
+nixPkgs = ["nodejs_22"]
+
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm run start"

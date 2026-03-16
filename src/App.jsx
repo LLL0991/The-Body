@@ -32,6 +32,7 @@ function App() {
     replaceNanjuWithIngredient,
     parseFoodTextAndRecord,
     recordAiNutrientResult,
+    setMealIngredientsFromAiRecommendation,
     quickIngredients,
     getRecommendedIdsForMeal,
     getMealMacros,
@@ -263,6 +264,9 @@ function App() {
           meals={meals}
           parseFoodTextAndRecord={parseFoodTextAndRecord}
           recordAiNutrientResult={recordAiNutrientResult}
+          setMealIngredientsFromAiRecommendation={setMealIngredientsFromAiRecommendation}
+          trainingMode={trainingMode}
+          TRAINING_MODES={TRAINING_MODES}
         />
       </Layout>
     )

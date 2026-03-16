@@ -73,5 +73,8 @@ export const SIGNATURE_RECIPES = {
 }
 
 export function getSignatureRecipe(mealName) {
-  return SIGNATURE_RECIPES[mealName] ?? null
+  if (SIGNATURE_RECIPES[mealName]) return SIGNATURE_RECIPES[mealName]
+  if (mealName === '练前补充') return SIGNATURE_RECIPES['练前加餐']
+  if (mealName === '练后摄入') return SIGNATURE_RECIPES['练后餐']
+  return null
 }

@@ -8,6 +8,7 @@ import {
   LUNCH_RICE_CARB_POOL_G,
   RICE_COOKED_CARBS_PER100,
 } from '../data/mealStore'
+import { getSuperBowlPer100ForName } from '../data/superBowlDatabase'
 import {
   parseFoodText,
   shouldSuggestMicroAdjust,
@@ -19,6 +20,49 @@ import {
 
 const MORNING_LUNCH_INDEX = 2
 const MORNING_POST_IMMEDIATE_INDEX = 1
+
+const STORAGE_KEY_PREFIX = 'the-body-store'
+
+function getDateKey() {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function loadFromStorage(dateKey) {
+  try {
+    if (typeof localStorage === 'undefined') return null
+    const key = dateKey ? `${STORAGE_KEY_PREFIX}-${dateKey}` : STORAGE_KEY_PREFIX
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const d = JSON.parse(raw)
+    if (!d || !Array.isArray(d.meals) || d.meals.length === 0) return null
+    const validModes = Object.values(TRAINING_MODES)
+    if (d.trainingMode && !validModes.includes(d.trainingMode)) d.trainingMode = undefined
+    return d
+  } catch (_) {
+    return null
+  }
+}
+
+function saveToStorage(data, dateKey) {
+  try {
+    if (typeof localStorage === 'undefined') return
+    const key = dateKey ? `${STORAGE_KEY_PREFIX}-${dateKey}` : STORAGE_KEY_PREFIX
+    const payload = JSON.stringify({
+      meals: data.meals,
+      trainingMode: data.trainingMode,
+      useCookedWeight: data.useCookedWeight,
+      weight: data.weight,
+      savedAt: Date.now(),
+    })
+    localStorage.setItem(key, payload)
+  } catch (e) {
+    if (typeof console !== 'undefined' && console.warn) console.warn('[the-body] localStorage save failed', e)
+  }
+}
 
 const PROTEIN_PER_KG = 1.8
 const CARBS_PER_KG = 1.5
@@ -58,9 +102,63 @@ export function useMealStore(options = {}) {
   /** 从餐次中删除的食材会加入此处，出现在快捷食材库中便于再次添加 */
   const [deletedIngredients, setDeletedIngredients] = useState([])
 
+  /** 首次挂载时跳过一次，避免覆盖 initialState；恢复后也仅跳过「紧接着」的那次 trainingMode 触发，用户之后切换模式仍要更新餐次 */
+  const skipModeResetRef = useRef(true)
+  const skipNextModeResetAfterRestoreRef = useRef(false)
+  const restoreDoneRef = useRef(false)
+  const didRestoreRef = useRef(false)
+  const saveSkippedOnceRef = useRef(false)
+  const sessionDateKeyRef = useRef(null)
+
+  /** 恢复时按当前模式的默认餐次结构对齐：餐次数量与名称以默认为准，食材/打卡状态尽量沿用已存数据 */
+  function normalizeRestoredMealNames(savedMeals, mode) {
+    const defaults = DEFAULT_MEALS_BY_MODE[mode]
+    if (!Array.isArray(defaults)) return Array.isArray(savedMeals) ? savedMeals : []
+    if (!Array.isArray(savedMeals)) return deepCloneMeals(defaults)
+    return defaults.map((def, i) => {
+      const saved = savedMeals[i]
+      return saved ? { ...saved, name: def.name } : { ...def, ingredients: [...(def.ingredients || [])], confirmed: !!def.confirmed }
+    })
+  }
+
   useEffect(() => {
+    const dateKey = getDateKey()
+    sessionDateKeyRef.current = dateKey
+    let s = loadFromStorage(dateKey)
+    if (!s?.meals?.length) s = loadFromStorage(null)
+    if (s?.meals?.length) {
+      const mode = s.trainingMode && Object.values(TRAINING_MODES).includes(s.trainingMode) ? s.trainingMode : initialMode
+      setTrainingModeState(mode)
+      setMeals(deepCloneMeals(normalizeRestoredMealNames(s.meals, mode)))
+      setUseCookedWeight(typeof s.useCookedWeight === 'boolean' ? s.useCookedWeight : true)
+      setWeight(typeof s.weight === 'number' && s.weight > 0 ? s.weight : initialWeight)
+      didRestoreRef.current = true
+      skipNextModeResetAfterRestoreRef.current = true
+    }
+    restoreDoneRef.current = true
+  }, [])
+
+  useEffect(() => {
+    if (skipModeResetRef.current) {
+      skipModeResetRef.current = false
+      return
+    }
+    if (skipNextModeResetAfterRestoreRef.current) {
+      skipNextModeResetAfterRestoreRef.current = false
+      return
+    }
     setMeals(deepCloneMeals(DEFAULT_MEALS_BY_MODE[trainingMode]))
   }, [trainingMode])
+
+  useEffect(() => {
+    if (!restoreDoneRef.current) return
+    if (didRestoreRef.current && !saveSkippedOnceRef.current) {
+      saveSkippedOnceRef.current = true
+      return
+    }
+    const dateKey = sessionDateKeyRef.current || getDateKey()
+    saveToStorage({ meals, trainingMode, useCookedWeight, weight }, dateKey)
+  }, [meals, trainingMode, useCookedWeight, weight])
 
   const isGymDay = trainingMode !== TRAINING_MODES.REST
   const targets = useMemo(() => {
@@ -286,6 +384,37 @@ export function useMealStore(options = {}) {
     })
   }, [trainingMode, useCookedWeight])
 
+  /** 用 AI 本餐推荐列表覆盖该餐的食材（午餐/晚餐「采用推荐」时调用）；已知超级碗食材用 DB 的每100g 校正，避免 AI 把 200g 份量碳水当成 100g 用 */
+  const setMealIngredientsFromAiRecommendation = useCallback((mealIndex, items) => {
+    if (!Array.isArray(items) || items.length === 0) return
+    const ts = Date.now()
+    const ingredientsToSet = items.map((it, i) => {
+      const g = Math.max(1, Number(it.grams) || 50)
+      const name = String(it.name || '未知').slice(0, 30)
+      const sbPer100 = getSuperBowlPer100ForName(name)
+      const useSb = sbPer100 != null
+      return {
+        id: 'ai-rec-' + ts + '-' + i,
+        name,
+        grams: g,
+        proteinPer100: useSb ? sbPer100.proteinPer100 : Math.round(((Number(it.protein) || 0) / g) * 1000) / 10,
+        carbsPer100: useSb ? sbPer100.carbsPer100 : Math.round(((Number(it.carbs) || 0) / g) * 1000) / 10,
+        fatPer100: useSb ? sbPer100.fatPer100 : Math.round(((Number(it.fat) || 0) / g) * 1000) / 10,
+        rawToCookedRatio: 1,
+      }
+    })
+    setMeals((prev) => {
+      const next = deepCloneMeals(prev)
+      const meal = next[mealIndex]
+      if (!meal) return prev
+      meal.ingredients = ingredientsToSet
+      if (trainingMode === TRAINING_MODES.MORNING && mealIndex === MORNING_POST_IMMEDIATE_INDEX) {
+        syncMorningLunchRice(next, useCookedWeight)
+      }
+      return next
+    })
+  }, [trainingMode, useCookedWeight])
+
   const showMicroAdjust = useMemo(
     () => shouldSuggestMicroAdjust(consumed, targets),
     [consumed, targets]
@@ -337,6 +466,7 @@ export function useMealStore(options = {}) {
     replaceNanjuWithIngredient,
     parseFoodTextAndRecord,
     recordAiNutrientResult,
+    setMealIngredientsFromAiRecommendation,
     showMicroAdjust,
     applyMicroAdjust,
     quickIngredients: FOOD_DATABASE,

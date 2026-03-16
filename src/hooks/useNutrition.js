@@ -80,7 +80,7 @@ function getMealConfig(mode, isGymDay) {
   }
   if (mode === NUTRITION_MODES.EVENING_GYM) {
     return {
-      names: ['早餐', '午餐', '练前加餐', '晚餐'],
+      names: ['早餐', '午餐', '练前补充', '练后摄入'],
       proteinRatios: [1 / 3, 1 / 3, 0, 1 / 3],
       fatRatios: [1 / 3, 1 / 3, 0, 1 / 3],
       postWorkoutIndex: 3,

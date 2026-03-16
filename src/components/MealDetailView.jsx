@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { ArrowLeft, CheckCircle, Trash2, ChevronDown, Camera, ScanLine, Mic, Loader2 } from 'lucide-react'
 import { QUICK_IDS_REPLACE_NANJU } from '../data/foodDatabase'
 import { getDisplayGrams, displayToStoredGrams } from '../data/mealStore'
-import { parseMealInput } from '../services/nutrientParser'
+import { parseMealInput, getMealRecommendation, getMealRecommendationItems } from '../services/nutrientParser'
 
 const NANJU_ID = 'nanju-rice-noodle'
 
@@ -30,7 +30,33 @@ export function MealDetailView({
   meals,
   parseFoodTextAndRecord,
   recordAiNutrientResult,
+  setMealIngredientsFromAiRecommendation,
+  trainingMode,
+  TRAINING_MODES,
 }) {
+  /** 早餐/午餐/晚餐 + 各模式练后餐（练后即刻、练后午餐、练后摄入）显示「这顿吃什么？」AI 推荐 */
+  const isAiRecommendedMeal =
+    meal.name === '早餐' ||
+    meal.name === '午餐' ||
+    meal.name === '晚餐' ||
+    meal.name === '练后即刻' ||
+    meal.name === '练后午餐' ||
+    meal.name === '练后摄入'
+
+  const todayEatenFoods = useMemo(() => {
+    if (!meals?.length) return []
+    const names = []
+    const seen = new Set()
+    for (const m of meals) {
+      for (const ing of m.ingredients || []) {
+        if (ing.name && !seen.has(ing.name)) {
+          seen.add(ing.name)
+          names.push(ing.name)
+        }
+      }
+    }
+    return names
+  }, [meals])
   const mealMacros = getMealMacros(mealIndex)
   const unconfirmedCount = meals?.filter((m) => !m.confirmed)?.length || 1
   const remaining = useMemo(() => ({
@@ -68,6 +94,91 @@ export function MealDetailView({
   const chunksRef = useRef([])
   const imageInputRef = useRef(null)
   const VOICE_AND_IMAGE_API = import.meta.env.VITE_VOICE_AND_IMAGE_API ?? ''
+
+  const [aiRecommendation, setAiRecommendation] = useState({ advice: '', suggestedGrams: {} })
+  const [aiRecommendationLoading, setAiRecommendationLoading] = useState(false)
+  const [aiRecommendationError, setAiRecommendationError] = useState('')
+
+  const [aiRecommendationItems, setAiRecommendationItems] = useState({ advice: '', items: [] })
+  const [aiRecommendationItemsLoading, setAiRecommendationItemsLoading] = useState(false)
+  const [aiRecommendationItemsError, setAiRecommendationItemsError] = useState('')
+  /** 仅切换餐次或点击「刷新推荐」时重新拉取；点击「采用推荐」不会触发重新拉取 */
+  const [recommendationRefreshKey, setRecommendationRefreshKey] = useState(0)
+
+  const trainingModeLabel = useMemo(() => {
+    if (!trainingMode) return '未知'
+    const map = { morning: '早训', noon: '午训', evening: '晚练', rest: '休息' }
+    return map[trainingMode] ?? '未知'
+  }, [trainingMode])
+
+  /** 午餐额度按训练模式：早训/午训时午餐略多（约 55%），晚练时午餐略少（约 45%），休息日 50%；勿差距过大，晚餐也须合理可吃 */
+  const lunchShare =
+    trainingModeLabel === '早训' || trainingModeLabel === '午训' ? 0.55
+    : trainingModeLabel === '晚练' ? 0.45
+    : 0.5
+  const remainingForRecommendation =
+    meal.name === '午餐'
+      ? {
+          protein: Math.max(0, Math.round(remaining.protein * lunchShare)),
+          carbs: Math.max(0, Math.round(remaining.carbs * lunchShare)),
+          fat: Math.max(0, Math.round(remaining.fat * lunchShare)),
+        }
+      : { protein: remaining.protein, carbs: remaining.carbs, fat: remaining.fat }
+
+  /** 仅切换餐次或点击「刷新推荐」时拉取；不依赖 remaining/consumed，避免「采用推荐」后误触发重新拉取 */
+  useEffect(() => {
+    if (!isAiRecommendedMeal) return
+    setAiRecommendationItemsLoading(true)
+    setAiRecommendationItemsError('')
+    getMealRecommendationItems({
+      remaining: remainingForRecommendation,
+      mealName: meal.name,
+      consumed: {
+        protein: consumed?.protein ?? 0,
+        carbs: consumed?.carbs ?? 0,
+        fat: consumed?.fat ?? 0,
+      },
+      todayEatenFoods,
+      currentMonth: new Date().getMonth() + 1,
+      trainingModeLabel,
+      preferBreakfastAlternative: meal.name === '早餐' && recommendationRefreshKey > 0,
+    })
+      .then((res) => setAiRecommendationItems({ advice: res.advice || '', items: res.items || [] }))
+      .catch((err) => {
+        setAiRecommendationItemsError(err?.message || 'AI 本餐推荐获取失败')
+        setAiRecommendationItems({ advice: '', items: [] })
+      })
+      .finally(() => setAiRecommendationItemsLoading(false))
+  }, [isAiRecommendedMeal, meal.name, trainingModeLabel, recommendationRefreshKey])
+
+  const refreshRecommendation = useCallback(() => {
+    setRecommendationRefreshKey((k) => k + 1)
+  }, [])
+
+  useEffect(() => {
+    if (!isAiRecommendedMeal && quickIngredients?.length) {
+      setAiRecommendationLoading(true)
+      setAiRecommendationError('')
+      getMealRecommendation({
+        remaining: { protein: remaining.protein, carbs: remaining.carbs, fat: remaining.fat },
+        mealName: meal.name,
+        ingredients: quickIngredients.map((q) => ({
+          id: q.id,
+          name: q.name,
+          proteinPer100: q.proteinPer100 ?? 0,
+          carbsPer100: q.carbsPer100 ?? 0,
+          fatPer100: q.fatPer100 ?? 0,
+          defaultGrams: q.grams ?? 100,
+        })),
+      })
+        .then((res) => setAiRecommendation({ advice: res.advice || '', suggestedGrams: res.suggestedGrams || {} }))
+        .catch((err) => {
+          setAiRecommendationError(err?.message || 'AI 推荐获取失败')
+          setAiRecommendation({ advice: '', suggestedGrams: {} })
+        })
+        .finally(() => setAiRecommendationLoading(false))
+    }
+  }, [isAiRecommendedMeal, meal.name, remaining.protein, remaining.carbs, remaining.fat, quickIngredients])
 
   useEffect(() => {
     setSpeechSupport(!!navigator.mediaDevices?.getUserMedia)
@@ -225,25 +336,50 @@ export function MealDetailView({
   const recommended = useMemo(() => quickIngredients.filter((q) => recommendedIds.includes(q.id)), [quickIngredients, recommendedIds])
   const others = useMemo(() => quickIngredients.filter((q) => !recommendedIds.includes(q.id)), [quickIngredients, recommendedIds])
 
+  /** 优先使用 AI 推荐克数；若无则按今日剩余 P/C/F 计算上限（fallback） */
+  const getSuggestedGrams = useCallback(
+    (ing) => {
+      const aiG = aiRecommendation.suggestedGrams[ing.id]
+      if (typeof aiG === 'number' && !Number.isNaN(aiG)) return Math.max(0, Math.round(aiG / 5) * 5)
+      const defaultG = ing.grams ?? 100
+      const p100 = ing.proteinPer100 ?? 0
+      const c100 = ing.carbsPer100 ?? 0
+      const f100 = ing.fatPer100 ?? 0
+      let cap = defaultG
+      if (c100 > 0 && remaining.carbs >= 0) cap = Math.min(cap, (remaining.carbs * 100) / c100)
+      if (p100 > 0 && remaining.protein >= 0) cap = Math.min(cap, (remaining.protein * 100) / p100)
+      if (f100 > 0 && remaining.fat >= 0) cap = Math.min(cap, (remaining.fat * 100) / f100)
+      const g = Math.max(0, Math.round(cap / 5) * 5)
+      return g < 5 && cap > 0 ? 5 : g
+    },
+    [remaining, aiRecommendation.suggestedGrams]
+  )
+
   const handleQuickIngredientClick = (q) => {
+    const suggestedGrams = getSuggestedGrams(q)
+    const ingredientToUse = { ...q, grams: suggestedGrams }
     const canReplaceNanju = QUICK_IDS_REPLACE_NANJU.some((id) => q.id === id || q.id.startsWith(id + '-'))
     if (hasNanju && canReplaceNanju) {
-      setPendingReplace({ ingredient: { ...q } })
+      setPendingReplace({ ingredient: ingredientToUse })
       return
     }
-    addOrReplaceQuickIngredient(mealIndex, { ...q })
+    addOrReplaceQuickIngredient(mealIndex, ingredientToUse)
   }
 
   const confirmReplace = () => {
     if (pendingReplace?.ingredient) {
-      replaceNanjuWithIngredient(mealIndex, pendingReplace.ingredient)
+      const ing = pendingReplace.ingredient
+      const suggestedGrams = getSuggestedGrams(ing)
+      replaceNanjuWithIngredient(mealIndex, { ...ing, grams: suggestedGrams })
       setPendingReplace(null)
     }
   }
 
   const cancelReplace = () => {
     if (pendingReplace?.ingredient) {
-      addOrReplaceQuickIngredient(mealIndex, pendingReplace.ingredient)
+      const ing = pendingReplace.ingredient
+      const suggestedGrams = getSuggestedGrams(ing)
+      addOrReplaceQuickIngredient(mealIndex, { ...ing, grams: suggestedGrams })
     }
     setPendingReplace(null)
   }
@@ -456,53 +592,227 @@ export function MealDetailView({
         </div>
       </div>
 
-      {/* 食材列表：名称 + 克数可编辑 */}
+      {/* 这顿吃什么？：早餐/午餐/晚餐/练后即刻 = AI 推荐列表 + 采用推荐（练后即刻优先推荐蛋白粉）；其他餐 = 当前已选 + 本餐还能吃什么 */}
       <div className="rounded-xl border border-[#404040] overflow-hidden">
         <div className="bg-[#393939] px-3 py-2 text-[11px] uppercase tracking-wide text-zinc-500">
-          食材与克数
+          这顿吃什么？
         </div>
-        <ul className="divide-y divide-[#404040]">
-          {meal.ingredients.map((ing) => (
-            <li
-              key={ing.id}
-              className="flex items-center justify-between gap-2 px-4 py-3"
-              style={{ backgroundColor: '#3a3a3a' }}
-            >
-              <span className="min-w-0 flex-1 text-[13px] text-zinc-200">{ing.name}</span>
-              <div className="flex shrink-0 items-center gap-2">
-                {editingId === ing.id ? (
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onBlur={saveEdit}
-                    onKeyDown={(e) => e.key === 'Enter' && saveEdit()}
-                    className="w-20 rounded border border-[#404040] bg-[#2a2a2a] px-2 py-1.5 text-right text-[13px] text-zinc-100"
-                    autoFocus
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => startEdit(ing)}
-                    className="rounded px-2 py-1 text-[13px] font-medium text-[#FF3D3C] hover:bg-[#404040]"
-                  >
-                    {Math.round(getDisplayGrams(ing, useCookedWeight))}g
-                  </button>
-                )}
+        {isAiRecommendedMeal ? (
+          <>
+            {aiRecommendationItemsLoading && (
+              <div className="px-4 py-4 text-[13px] text-zinc-500">正在生成{meal.name}推荐…</div>
+            )}
+            {aiRecommendationItemsError && (
+              <div className="border-b border-[#404040] bg-[#323232] px-4 py-3">
+                <p className="text-[12px] text-amber-400">{aiRecommendationItemsError}</p>
                 <button
                   type="button"
-                  onClick={() => removeMealIngredient(mealIndex, ing.id)}
-                  className="rounded p-1.5 text-zinc-400 hover:bg-[#404040] hover:text-zinc-200"
-                  title="删除"
+                  onClick={refreshRecommendation}
+                  disabled={aiRecommendationItemsLoading}
+                  className="mt-3 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2 text-[13px] text-amber-400 disabled:opacity-50"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  刷新重试
                 </button>
               </div>
-            </li>
-          ))}
-        </ul>
+            )}
+            {!aiRecommendationItemsLoading && (aiRecommendationItems.advice || aiRecommendationItems.items?.length > 0) && (
+              <div className="border-b border-[#404040] bg-[#323232] px-3 py-3">
+                {aiRecommendationItems.advice && (
+                  <p className="mb-3 text-[12px] leading-relaxed text-zinc-300">{aiRecommendationItems.advice}</p>
+                )}
+                <ul className="space-y-2">
+                  {aiRecommendationItems.items.map((it, i) => (
+                    <li key={i} className="flex items-center justify-between text-[13px] text-zinc-200">
+                      <span>{it.name}</span>
+                      <span className="text-[#FF3D3C]">{Math.round(it.grams)}g</span>
+                    </li>
+                  ))}
+                </ul>
+                {aiRecommendationItems.advice && !aiRecommendationItems.items?.length && (
+                  <p className="mb-2 text-[11px] text-amber-500/90">推荐结果暂无具体食材项，请点击「刷新」重试。</p>
+                )}
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (aiRecommendationItems.items?.length) {
+                        setMealIngredientsFromAiRecommendation(mealIndex, aiRecommendationItems.items)
+                      }
+                    }}
+                    disabled={!aiRecommendationItems.items?.length}
+                    className="flex-1 rounded-lg py-2.5 text-[13px] font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ backgroundColor: '#FF3D3C' }}
+                  >
+                    采用推荐
+                  </button>
+                  <button
+                    type="button"
+                    onClick={refreshRecommendation}
+                    disabled={aiRecommendationItemsLoading}
+                    className="shrink-0 rounded-lg border border-zinc-500 px-3 py-2.5 text-[13px] text-zinc-300 disabled:opacity-50"
+                  >
+                    刷新
+                  </button>
+                </div>
+              </div>
+            )}
+            {meal.ingredients.length > 0 ? (
+              <div className="px-3 py-2">
+                <p className="mb-2 text-[11px] text-zinc-500">当前已选（可编辑）— 来自「采用推荐」或手动添加</p>
+                <ul className="divide-y divide-[#404040]">
+                  {meal.ingredients.map((ing) => (
+                    <li
+                      key={ing.id}
+                      className="flex items-center justify-between gap-2 py-3"
+                      style={{ backgroundColor: 'transparent' }}
+                    >
+                      <span className="min-w-0 flex-1 text-[13px] text-zinc-200">{ing.name}</span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {editingId === ing.id ? (
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={saveEdit}
+                            onKeyDown={(e) => e.key === 'Enter' && saveEdit()}
+                            className="w-20 rounded border border-[#404040] bg-[#2a2a2a] px-2 py-1.5 text-right text-[13px] text-zinc-100"
+                            autoFocus
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => startEdit(ing)}
+                            className="rounded px-2 py-1 text-[13px] font-medium text-[#FF3D3C] hover:bg-[#404040]"
+                          >
+                            {Math.round(getDisplayGrams(ing, useCookedWeight))}g
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removeMealIngredient(mealIndex, ing.id)}
+                          className="rounded p-1.5 text-zinc-400 hover:bg-[#404040] hover:text-zinc-200"
+                          title="删除"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <div className="px-3 py-2">
+                <p className="text-[11px] text-zinc-500">当前未选食材，点击上方「采用推荐」填入本餐，或稍后手动添加。</p>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <ul className="divide-y divide-[#404040]">
+              {meal.ingredients.map((ing) => (
+                <li
+                  key={ing.id}
+                  className="flex items-center justify-between gap-2 px-4 py-3"
+                  style={{ backgroundColor: '#3a3a3a' }}
+                >
+                  <span className="min-w-0 flex-1 text-[13px] text-zinc-200">{ing.name}</span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {editingId === ing.id ? (
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onBlur={saveEdit}
+                        onKeyDown={(e) => e.key === 'Enter' && saveEdit()}
+                        className="w-20 rounded border border-[#404040] bg-[#2a2a2a] px-2 py-1.5 text-right text-[13px] text-zinc-100"
+                        autoFocus
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startEdit(ing)}
+                        className="rounded px-2 py-1 text-[13px] font-medium text-[#FF3D3C] hover:bg-[#404040]"
+                      >
+                        {Math.round(getDisplayGrams(ing, useCookedWeight))}g
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removeMealIngredient(mealIndex, ing.id)}
+                      className="rounded p-1.5 text-zinc-400 hover:bg-[#404040] hover:text-zinc-200"
+                      title="删除"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {meal.name !== '练后即刻' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setQuickIngredientsCollapsed((c) => !c)}
+                  className="flex w-full items-center gap-1.5 border-t border-[#404040] px-3 py-2 text-[12px] text-zinc-500 hover:bg-[#323232]"
+                >
+                  <span>{quickIngredientsCollapsed ? '本餐还能吃什么（点击展开）' : '收起'}</span>
+                  <ChevronDown
+                    className="h-4 w-4 shrink-0 transition-transform"
+                    style={{ transform: quickIngredientsCollapsed ? 'rotate(-90deg)' : 'none', color: '#FF3D3C' }}
+                  />
+                </button>
+                {!quickIngredientsCollapsed && (
+                  <div className="border-t border-[#404040] bg-[#323232] px-3 py-3">
+                    <p className="mb-2 text-[11px] uppercase tracking-wide text-zinc-500">本餐还能吃什么</p>
+                    {aiRecommendationLoading && <p className="mb-2 text-[12px] text-zinc-500">正在生成建议…</p>}
+                    {aiRecommendationError && <p className="mb-2 text-[12px] text-amber-400">{aiRecommendationError}</p>}
+                    {!aiRecommendationLoading && aiRecommendation.advice && (
+                      <p className="mb-3 text-[12px] leading-relaxed text-zinc-300">{aiRecommendation.advice}</p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      {recommended.map((q) => {
+                        const suggested = getSuggestedGrams(q)
+                        const disabled = suggested <= 0
+                        return (
+                          <button
+                            key={q.id}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => !disabled && handleQuickIngredientClick(q)}
+                            className="shrink-0 rounded-xl border border-[#BEF264] bg-[#2a3320] px-3 py-2 text-[13px] text-[#BEF264] transition hover:bg-[#404040] disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {q.name}
+                            <span className="ml-1 text-zinc-500">{suggested <= 0 ? '已满' : `约${suggested}g`}</span>
+                          </button>
+                        )
+                      })}
+                      {others.map((q) => {
+                        const suggested = getSuggestedGrams(q)
+                        const disabled = suggested <= 0
+                        return (
+                          <button
+                            key={q.id}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => !disabled && handleQuickIngredientClick(q)}
+                            className="shrink-0 rounded-xl border border-[#404040] px-3 py-2 text-[13px] text-zinc-200 transition hover:border-[#FF3D3C] hover:bg-[#404040] disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {q.name}
+                            <span className="ml-1 text-zinc-500">{suggested <= 0 ? '已满' : `约${suggested}g`}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
       </div>
 
       {/* 超级碗/标准分量：150g 碳水 + 35g 蛋白质 */}
@@ -516,61 +826,45 @@ export function MealDetailView({
         </button>
       )}
 
-      {/* 快捷食材库：本餐推荐 + 更多食材，可折叠 */}
-      <div>
-        <button
-          type="button"
-          onClick={() => setQuickIngredientsCollapsed((c) => !c)}
-          className="mb-2 flex w-full items-center gap-1.5 text-[12px] text-zinc-500"
-        >
-          <span>快捷食材库</span>
-          <ChevronDown
-            className="h-4 w-4 shrink-0 transition-transform"
-            style={{
-              transform: quickIngredientsCollapsed ? 'rotate(-90deg)' : 'none',
-              color: '#FF3D3C',
-            }}
-          />
-        </button>
-        {!quickIngredientsCollapsed && recommended.length > 0 && (
-          <div className="mb-2">
-            <p className="mb-1.5 text-[11px] uppercase tracking-wide text-zinc-600">本餐推荐</p>
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {recommended.map((q) => (
-                <button
-                  key={q.id}
-                  type="button"
-                  onClick={() => handleQuickIngredientClick(q)}
-                  className="shrink-0 rounded-xl border border-[#BEF264] bg-[#2a3320] px-3 py-2.5 text-[13px] text-[#BEF264] transition hover:bg-[#404040]"
-                >
-                  {q.name}
-                  <span className="ml-1 text-zinc-500">约{q.grams}g</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {!quickIngredientsCollapsed && (
+      {/* 快捷食材库：仅练后等非 AI 推荐餐显示，早餐/午餐/晚餐以「这顿吃什么？」AI 推荐为主 */}
+      {!isAiRecommendedMeal && others.length > 0 && (
         <div>
-          <p className="mb-1.5 text-[11px] uppercase tracking-wide text-zinc-600">
-            {recommended.length > 0 ? '更多食材' : '全部'}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {others.map((q) => (
-              <button
-                key={q.id}
-                type="button"
-                onClick={() => handleQuickIngredientClick(q)}
-                className="shrink-0 rounded-xl border border-[#404040] px-3 py-2.5 text-[13px] text-zinc-200 transition hover:border-[#FF3D3C] hover:bg-[#404040]"
-              >
-                {q.name}
-                <span className="ml-1 text-zinc-500">约{q.grams}g</span>
-              </button>
-            ))}
-          </div>
+          <button
+            type="button"
+            onClick={() => setQuickIngredientsCollapsed((c) => !c)}
+            className="mb-2 flex w-full items-center gap-1.5 text-[12px] text-zinc-500"
+          >
+            <span>更多食材（展开）</span>
+            <ChevronDown
+              className="h-4 w-4 shrink-0 transition-transform"
+              style={{
+                transform: quickIngredientsCollapsed ? 'rotate(-90deg)' : 'none',
+                color: '#FF3D3C',
+              }}
+            />
+          </button>
+          {!quickIngredientsCollapsed && (
+            <div className="flex flex-wrap gap-2">
+              {others.map((q) => {
+                const suggested = getSuggestedGrams(q)
+                const disabled = suggested <= 0
+                return (
+                  <button
+                    key={q.id}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => !disabled && handleQuickIngredientClick(q)}
+                    className="shrink-0 rounded-xl border border-[#404040] px-3 py-2 text-[13px] text-zinc-200 transition hover:border-[#FF3D3C] hover:bg-[#404040] disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {q.name}
+                    <span className="ml-1 text-zinc-500">{suggested <= 0 ? '已满' : `约${suggested}g`}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
-        )}
-      </div>
+      )}
 
       {/* 打卡 / 确认已摄入：点击计入仪表盘，再点一次取消打卡 */}
       <div className="pt-2">

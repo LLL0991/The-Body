@@ -23,7 +23,8 @@ export const DEFAULT_BREAKFAST_INGREDIENTS = [
 ]
 
 // ─── 休息日早餐：2 片全麦面包 + 2 个鸡蛋 + 豆浆 ───
-const REST_BREAKFAST_INGREDIENTS = [
+/** 休息日早餐固定组合（已暴露） */
+export const REST_BREAKFAST_INGREDIENTS = [
   { id: 'wholewheat-bread', name: '全麦面包', grams: 60, proteinPer100: 10, carbsPer100: 50, fatPer100: 2, rawToCookedRatio: 1 },
   { id: 'egg', name: '鸡蛋', grams: 100, proteinPer100: 12.5, carbsPer100: 1, fatPer100: 10, rawToCookedRatio: 1 },
   { id: 'soy-milk', name: '豆浆', grams: 250, proteinPer100: 3.5, carbsPer100: 1.5, fatPer100: 2, rawToCookedRatio: 1 },
@@ -56,7 +57,8 @@ function mealRiceFish(riceG = 150, fishG = 200) {
 }
 
 // ─── 仅蛋白粉（练后即刻 1 勺康比特）────
-const POST_IMMEDIATE_PROTEIN_ONLY = [
+/** 早训-练后即刻固定组合：仅蛋白粉 30g（已暴露） */
+export const POST_IMMEDIATE_PROTEIN_ONLY = [
   { id: 'protein-shake', name: '康比特蛋白粉', grams: 30, proteinPer100: 80, carbsPer100: 5, fatPer100: 3, rawToCookedRatio: 1 },
 ]
 
@@ -76,41 +78,54 @@ function morningPostImmediateCarbsG() {
   return (30 * 5) / 100
 }
 
+/** 早餐/午餐/晚餐均由「这顿吃什么？」AI 推荐，初始无已选；用户「采用推荐」或手动添加后再显示在「当前已选」。固定组合通过 prompt 作为早餐的默认推荐，不再在此预填。 */
+const EMPTY_INGREDIENTS = []
+
 export const MORNING_DEFAULTS = [
-  { name: '早餐', ingredients: normalizeIngredients([...DEFAULT_BREAKFAST_INGREDIENTS]) },
+  { name: '早餐', ingredients: [...EMPTY_INGREDIENTS] },
   { name: '练后即刻', ingredients: normalizeIngredients([...POST_IMMEDIATE_PROTEIN_ONLY]) },
-  {
-    name: '午餐',
-    ingredients: normalizeIngredients(
-      mealRiceLeanVeg(
-        Math.max(0, Math.round(((LUNCH_RICE_CARB_POOL_G - morningPostImmediateCarbsG()) / RICE_COOKED_CARBS_PER100) * 100)),
-        150,
-        200
-      )
-    ),
-  },
-  { name: '晚餐', ingredients: normalizeIngredients(mealSweetPotatoLeanGreens(100, 150)) },
+  { name: '午餐', ingredients: [...EMPTY_INGREDIENTS] },
+  { name: '晚餐', ingredients: [...EMPTY_INGREDIENTS] },
 ]
 
 // ─── 2. 午训 (Noon Gym) ───
 export const NOON_DEFAULTS = [
-  { name: '早餐', ingredients: normalizeIngredients([...DEFAULT_BREAKFAST_INGREDIENTS]) },
+  { name: '早餐', ingredients: [...EMPTY_INGREDIENTS] },
   { name: '练前', ingredients: normalizeIngredients([...BANANA_ONE]) },
   { name: '练后午餐', ingredients: normalizeIngredients(mealRiceLeanVeg(150, 150, 150)) },
-  { name: '晚餐', ingredients: normalizeIngredients(mealSweetPotatoLeanGreens(50, 150)) },
+  { name: '晚餐', ingredients: [...EMPTY_INGREDIENTS] },
 ]
 
-// ─── 3. 晚练 (Evening Gym) ───
+// ─── 3. 晚练 (Evening Gym)：早餐 → 午餐 → 练前补充 → 练后摄入（无单独「晚餐」）────
 export const EVENING_DEFAULTS = [
-  { name: '早餐', ingredients: normalizeIngredients([...DEFAULT_BREAKFAST_INGREDIENTS]) },
-  { name: '午餐', ingredients: normalizeIngredients(mealSweetPotatoLeanGreens(50, 150)) },
-  { name: '练前', ingredients: normalizeIngredients([...BANANA_20G_C]) },
-  { name: '练后晚餐', ingredients: normalizeIngredients(mealRiceFish(150, 200)) },
+  { name: '早餐', ingredients: [...EMPTY_INGREDIENTS] },
+  { name: '午餐', ingredients: [...EMPTY_INGREDIENTS] },
+  { name: '练前补充', ingredients: normalizeIngredients([...BANANA_20G_C]) },
+  { name: '练后摄入', ingredients: normalizeIngredients(mealRiceFish(150, 200)) },
 ]
 
-// ─── 4. 休息 (Rest Day) ───
+// ─── 4. 休息 (Rest Day)：仅三顿，无练前/练后 ───
 export const REST_DEFAULTS = [
-  { name: '早餐', ingredients: normalizeIngredients([...REST_BREAKFAST_INGREDIENTS]) },
-  { name: '午餐', ingredients: normalizeIngredients(mealRiceLeanVeg(150, 150, 150)) },
-  { name: '晚餐', ingredients: normalizeIngredients(mealRiceLeanVeg(150, 150, 150)) },
+  { name: '早餐', ingredients: [...EMPTY_INGREDIENTS] },
+  { name: '午餐', ingredients: [...EMPTY_INGREDIENTS] },
+  { name: '晚餐', ingredients: [...EMPTY_INGREDIENTS] },
 ]
+
+// ─── 暴露：早餐 & 练后餐固定组合说明（便于文档 / UI 引用）────
+/** 早餐固定组合：训练日 vs 休息日 */
+export const BREAKFAST_FIXED_COMBOS = {
+  /** 训练日（早训/午训/晚练）：南巨米粉 30g + 康比特蛋白粉 25g + 羽衣甘蓝粉 10g */
+  training: DEFAULT_BREAKFAST_INGREDIENTS,
+  /** 休息日：全麦面包 60g + 鸡蛋 100g + 豆浆 250g */
+  rest: REST_BREAKFAST_INGREDIENTS,
+}
+
+/** 练后餐固定组合：按模式 */
+export const POST_MEAL_FIXED_COMBOS = {
+  /** 早训-练后即刻：康比特蛋白粉 30g */
+  morningPost: POST_IMMEDIATE_PROTEIN_ONLY,
+  /** 午训-练后午餐：熟米饭 150g + 鸡胸 150g + 蔬菜 150g */
+  noonPost: mealRiceLeanVeg(150, 150, 150),
+  /** 晚练-练后摄入：熟米饭 150g + 鱼/虾 200g（即当日主餐，无单独晚餐） */
+  eveningPost: mealRiceFish(150, 200),
+}

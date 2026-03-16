@@ -148,3 +148,89 @@ export const SUPER_BOWL_DB = {
   },
 }
 
+/** 超级碗组合规则说明：推荐时必须按此结构输出，且 grams 只能使用下表固定份量；每次推荐应轮换搭配，避免千篇一律。 */
+export const SUPER_BOWL_COMBO_RULES = `一份超级碗 = 碳水底 + 辅助碳水/沙拉 + 蛋白质 + 蔬菜 + 可选 toppings + 酱汁。所有食材可随意组合，AI 的职责是帮用户搭配出不一样的一餐并计算摄入。
+- **碳水底**：必选 1 种，一份 200g、半份 100g。
+- **辅助碳水/沙拉**：推荐时通常应包含，不要漏掉。可选：① 混合沙拉叶（90g 或半份 100g），与碳水底组成「半份谷物+半份沙拉」即 混合谷物饭 100g+混合沙拉叶 100g；② 或 玉米粒 40g、黑豆酱 40g 任选/搭配。输出 items 里须包含至少一种辅助碳水（沙拉叶/玉米粒/黑豆酱），与碳水底、蛋白质、蔬菜、酱汁一起列出。
+- **轮换与多样性**：严禁每次都推荐同一款。根据「今日已吃过的食物」轮换蛋白质/碳水底/蔬菜；在 7 种蛋白质、多种碳水底、辅助碳水、蔬菜与酱汁之间轮换搭配，每次刷新可给出不同组合。
+- **蛋白质**：必选 1 种，份量固定（见下表）。亚麻籽油烤虾为 6只，不可写 100g。
+- **酱汁**：必选 1 种，固定 30g。禁止编造不存在的份量。`
+
+/** 格式化为「这顿吃什么？」推荐 prompt 用的超级碗食材清单，供午餐/晚餐推荐时直接引用 */
+export function formatSuperBowlDataForPrompt() {
+  const db = SUPER_BOWL_DB.database
+  const lines = []
+
+  lines.push('## 超级碗组合规则（必须遵守）')
+  lines.push(SUPER_BOWL_COMBO_RULES)
+  lines.push('')
+  lines.push('【碳水底】必选 1 种，一份 200g、半份 100g')
+  for (const x of db.carbonates_base) {
+    if (x.category === 'secondary') continue
+    lines.push(`  ${x.name} ${x.size} → P${x.protein} C${x.carbs} F${x.fat}`)
+  }
+  lines.push('【辅助碳水/沙拉】推荐时须包含至少一种，勿漏：半份谷物+半份沙拉=混合谷物饭100g+混合沙拉叶100g；或 玉米粒40g/黑豆酱40g')
+  for (const x of db.carbonates_base) {
+    if (x.category === 'secondary') lines.push(`  ${x.name} ${x.size} → P${x.protein} C${x.carbs} F${x.fat}`)
+  }
+  lines.push('  ［或］混合沙拉叶 90g / 半份 100g → 与碳水底搭配')
+  lines.push('【蛋白质】固定份量（100g/65g/70g/130g/6只 等），亚麻籽油烤虾为 6只 不可写100g')
+  for (const x of db.proteins) {
+    lines.push(`  ${x.name} ${x.size} → P${x.protein} C${x.carbs} F${x.fat}`)
+  }
+  lines.push('【蔬菜/纤维】')
+  for (const x of db.dietary_fiber) {
+    lines.push(`  ${x.name} ${x.size} → P${x.protein} C${x.carbs} F${x.fat}`)
+  }
+  lines.push('【toppings 可选】')
+  for (const x of db.toppings) {
+    lines.push(`  ${x.name} ${x.size} → P${x.protein} C${x.carbs} F${x.fat}`)
+  }
+  lines.push('【酱汁】固定 30g（或 15g/10g 见 size）')
+  for (const grade of Object.values(db.sauces)) {
+    for (const x of grade) {
+      lines.push(`  ${x.name} ${x.size} → P${x.protein} C${x.carbs} F${(x.fat != null ? x.fat : 0)}`)
+    }
+  }
+  lines.push('【酱汁推荐】优先：融合油醋汁、博洛尼亚牛肉酱、云南树番茄烧椒酱、坚果彩椒酱。避开：主厨凯撒酱、焙煎芝麻酱、牛油果女神酱。')
+  lines.push('【固定套餐可选】海陆多蛋白热烹沙拉 P27.1 C53.1 F21.5；三文鱼多蛋白热烹沙拉 P30.8 C48.5 F21.5；彩椒鸡胸双蛋热烹沙拉 P23.7 C51.1 F12.9；新疆番茄牛肉鲜蔬锅 P30.9 C20 F23.6；冬阴功鸡肉鲜蔬锅 P30.5 C21.6 F13.2。')
+
+  return lines.join('\n')
+}
+
+/** 从超级碗 DB 按名称查找「每 100g」的 P/C/F，用于校正「采用推荐」后食材营养（避免 AI 把 200g 份量碳水当成 100g 用） */
+function collectSuperBowlPer100() {
+  const db = SUPER_BOWL_DB.database
+  const list = []
+  const push = (x) => {
+    const refG = (x.size && parseInt(x.size, 10)) || 0
+    if (refG <= 0) return
+    list.push({
+      name: x.name,
+      proteinPer100: Math.round((Number(x.protein) || 0) / refG * 1000) / 10,
+      carbsPer100: Math.round((Number(x.carbs) || 0) / refG * 1000) / 10,
+      fatPer100: Math.round((Number(x.fat) || 0) / refG * 1000) / 10,
+    })
+  }
+  db.carbonates_base.forEach(push)
+  db.proteins.forEach((x) => { if ((x.size || '').match(/\d+g/)) push(x) })
+  db.dietary_fiber.forEach(push)
+  db.toppings.forEach((x) => { if (x.size && x.protein != null) push(x) })
+  Object.values(db.sauces).flat().forEach((x) => { if (x.size && (x.protein != null || x.carbs != null)) push(x) })
+  return list
+}
+
+const _superBowlPer100List = collectSuperBowlPer100()
+
+/** 按名称匹配超级碗食材，返回正确的每 100g 营养；未匹配则返回 null（沿用 AI 返回值） */
+export function getSuperBowlPer100ForName(name) {
+  if (!name || typeof name !== 'string') return null
+  const n = name.trim()
+  for (const row of _superBowlPer100List) {
+    if (row.name === n || n.includes(row.name) || row.name.includes(n)) {
+      return { proteinPer100: row.proteinPer100, carbsPer100: row.carbsPer100, fatPer100: row.fatPer100 }
+    }
+  }
+  return null
+}
+
