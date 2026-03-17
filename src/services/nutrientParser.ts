@@ -279,6 +279,32 @@ function tryBuildSuperBowlComboFromText(text: string): NutrientParseResult | nul
   if (hasSuperBowlWord) {
     const db = SUPER_BOWL_DB.database
 
+    // --- 简称/口语兜底：用户只说“牛肉酱/鸡胸/鸡腿/虾”等，不一定写出 DB 全称 ---
+    const shorthandSingle = (() => {
+      if (/牛肉酱/.test(text)) return { name: '博洛尼亚牛肉酱', grams: 30 }
+      if (/牛肉辣酱|辣酱/.test(text)) return { name: '招牌牛肉辣酱', grams: 15 }
+      if (/鸡胸/.test(text)) return { name: '果木烟熏鸡胸', grams: 100 }
+      if (/鸡腿/.test(text)) return { name: '蜜汁鸡腿', grams: 100 }
+      if (/虾/.test(text)) return { name: '亚麻籽油烤虾', grams: 100 }
+      return null
+    })()
+
+    if (shorthandSingle) {
+      const per = getSuperBowlPer100ForName(shorthandSingle.name) || { proteinPer100: 0, carbsPer100: 0, fatPer100: 0 }
+      const factor = shorthandSingle.grams / 100
+      const p = Math.round(per.proteinPer100 * factor * 10) / 10
+      const c = Math.round(per.carbsPer100 * factor * 10) / 10
+      const f = Math.round(per.fatPer100 * factor * 10) / 10
+      return {
+        protein: p,
+        carbs: c,
+        fat: f,
+        deltaCarbs: Math.round((c - CARBS_ANCHOR_G) * 10) / 10,
+        adjustment: `已按超级碗数据库记录单独配料「${shorthandSingle.name}」${shorthandSingle.grams}g。`,
+        items: [{ name: shorthandSingle.name, grams: shorthandSingle.grams, protein: p, carbs: c, fat: f }],
+      }
+    }
+
     type Row = { name: string; size?: string; protein?: number; carbs?: number; fat?: number }
     const rows: Row[] = []
     const pushRows = (arr?: Array<any>) => {
