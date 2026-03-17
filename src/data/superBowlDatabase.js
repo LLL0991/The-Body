@@ -213,7 +213,20 @@ function collectSuperBowlPer100() {
     })
   }
   db.carbonates_base.forEach(push)
-  db.proteins.forEach((x) => { if ((x.size || '').match(/\d+g/)) push(x) })
+  // proteins 中存在“按只”标注（例如：亚麻籽油烤虾 6只）。这类条目若不纳入，会导致套餐展开时该食材 P/C/F 变成 0。
+  // 策略：若 size 不含 g 但含“只”，按“一份≈100g”近似，把该份宏量视作 per100g 使用。
+  db.proteins.forEach((x) => {
+    const size = String(x.size || '').trim()
+    if (size.match(/\d+g/i)) return push(x)
+    if (size.includes('只')) {
+      list.push({
+        name: x.name,
+        proteinPer100: Math.round((Number(x.protein) || 0) * 10) / 10,
+        carbsPer100: Math.round((Number(x.carbs) || 0) * 10) / 10,
+        fatPer100: Math.round((Number(x.fat) || 0) * 10) / 10,
+      })
+    }
+  })
   db.dietary_fiber.forEach(push)
   db.toppings.forEach((x) => { if (x.size && x.protein != null) push(x) })
   Object.values(db.sauces).flat().forEach((x) => { if (x.size && (x.protein != null || x.carbs != null)) push(x) })
