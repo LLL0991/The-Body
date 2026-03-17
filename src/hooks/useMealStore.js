@@ -102,9 +102,7 @@ export function useMealStore(options = {}) {
   /** 从餐次中删除的食材会加入此处，出现在快捷食材库中便于再次添加 */
   const [deletedIngredients, setDeletedIngredients] = useState([])
 
-  /** 首次挂载时跳过一次，避免覆盖 initialState；恢复后也仅跳过「紧接着」的那次 trainingMode 触发，用户之后切换模式仍要更新餐次 */
-  const skipModeResetRef = useRef(true)
-  const skipNextModeResetAfterRestoreRef = useRef(false)
+  /** 用于控制首次恢复与首次保存的节奏；trainingMode 改变本身不再重置 meals，只作为同一天的一种「标签」 */
   const restoreDoneRef = useRef(false)
   const didRestoreRef = useRef(false)
   const saveSkippedOnceRef = useRef(false)
@@ -133,22 +131,9 @@ export function useMealStore(options = {}) {
       setUseCookedWeight(typeof s.useCookedWeight === 'boolean' ? s.useCookedWeight : true)
       setWeight(typeof s.weight === 'number' && s.weight > 0 ? s.weight : initialWeight)
       didRestoreRef.current = true
-      skipNextModeResetAfterRestoreRef.current = true
     }
     restoreDoneRef.current = true
   }, [])
-
-  useEffect(() => {
-    if (skipModeResetRef.current) {
-      skipModeResetRef.current = false
-      return
-    }
-    if (skipNextModeResetAfterRestoreRef.current) {
-      skipNextModeResetAfterRestoreRef.current = false
-      return
-    }
-    setMeals(deepCloneMeals(DEFAULT_MEALS_BY_MODE[trainingMode]))
-  }, [trainingMode])
 
   useEffect(() => {
     if (!restoreDoneRef.current) return
@@ -333,14 +318,17 @@ export function useMealStore(options = {}) {
   const recordAiNutrientResult = useCallback((mealIndex, result, sourceText, options = {}) => {
     const { storeAsRaw = false, replaceExisting = false } = options
     const ts = Date.now()
-    const isNoodle = (name) => /拉面|面条|米线|面\b/.test(String(name || ''))
     const ingredientsToAdd = []
     if (result.items?.length > 0) {
       result.items.forEach((it, i) => {
         const g = Math.max(1, Number(it.grams) || 100)
         const name = String(it.name || '未知').slice(0, 30)
-        const asRaw = storeAsRaw && isNoodle(name)
-        const ratio = asRaw ? 0.4 : 1
+        // 优先使用解析结果自带的口径；storeAsRaw 仅作为“强制覆盖为生/干重”的开关
+        const itemIsRaw = typeof it.isRawWeight === 'boolean' ? it.isRawWeight : false
+        const asRaw = storeAsRaw ? true : itemIsRaw
+        const cookedPerRawRatio = Number(it.cookedPerRawRatio)
+        const rawToCookedRatio =
+          asRaw && Number.isFinite(cookedPerRawRatio) && cookedPerRawRatio > 0 ? 1 / cookedPerRawRatio : 1
         ingredientsToAdd.push({
           id: 'ai-' + ts + '-' + i,
           name,
@@ -348,14 +336,14 @@ export function useMealStore(options = {}) {
           proteinPer100: Math.round(((Number(it.protein) || 0) / g) * 1000) / 10,
           carbsPer100: Math.round(((Number(it.carbs) || 0) / g) * 1000) / 10,
           fatPer100: Math.round(((Number(it.fat) || 0) / g) * 1000) / 10,
-          rawToCookedRatio: ratio,
+          rawToCookedRatio,
           ...(asRaw ? { isStoredAsRaw: true } : {}),
         })
       })
     } else {
       const name = (sourceText && String(sourceText).trim().slice(0, 30)) || 'AI解析'
-      const asRaw = storeAsRaw && isNoodle(name)
-      const ratio = asRaw ? 0.4 : 1
+      const asRaw = !!storeAsRaw
+      const rawToCookedRatio = 1
       ingredientsToAdd.push({
         id: 'ai-' + ts,
         name,
@@ -363,7 +351,7 @@ export function useMealStore(options = {}) {
         proteinPer100: result.protein ?? 0,
         carbsPer100: result.carbs ?? 0,
         fatPer100: result.fat ?? 0,
-        rawToCookedRatio: ratio,
+        rawToCookedRatio,
         ...(asRaw ? { isStoredAsRaw: true } : {}),
       })
     }

@@ -47,13 +47,18 @@ function App() {
   const [homeAiAdjustment, setHomeAiAdjustment] = useState('')
   const [homeParsedResult, setHomeParsedResult] = useState(null)
   const [homeParsedMealIndex, setHomeParsedMealIndex] = useState(null)
-  const [homeStoreAsRaw, setHomeStoreAsRaw] = useState(false)
+  const homeRawAdjustedRef = useRef(false)
   const [homeIsRecording, setHomeIsRecording] = useState(false)
   const [homeSpeechSupport, setHomeSpeechSupport] = useState(false)
   const [homeScanHint, setHomeScanHint] = useState('')
   const homeMediaRecorderRef = useRef(null)
   const homeChunksRef = useRef([])
   const homeImageInputRef = useRef(null)
+
+  // 旧的“全局勾选乘倍率”逻辑已移除，避免口径混乱（由 parseMealInput 在计算阶段完成口径换算）
+  useEffect(() => {
+    homeRawAdjustedRef.current = false
+  }, [homeParsedResult])
 
   useEffect(() => {
     setHomeSpeechSupport(!!navigator.mediaDevices?.getUserMedia)
@@ -159,13 +164,13 @@ function App() {
       const meal = meals[homeParsedMealIndex]
       const hasAiOrUserContent = meal.ingredients?.some((ing) => String(ing.id || '').startsWith('ai-'))
       recordAiNutrientResult(homeParsedMealIndex, homeParsedResult, text || undefined, {
-        storeAsRaw: homeStoreAsRaw,
+        // 入库口径使用每个 item 的 isRawWeight（由解析结果决定），不再用全局勾选去“乘倍率”
+        storeAsRaw: false,
         replaceExisting: !hasAiOrUserContent,
       })
       setMealConfirmed(homeParsedMealIndex, true)
       setHomeParsedResult(null)
       setHomeParsedMealIndex(null)
-      setHomeStoreAsRaw(false)
       setHomeAiText('')
       return
     }
@@ -418,16 +423,9 @@ function App() {
                 </select>
                 <span className="text-[10px] text-zinc-500">（可根据「中午/早上/练后」等自动识别，可改）</span>
               </div>
-              <label className="flex items-center gap-2 text-[11px] text-zinc-400">
-                <input
-                  type="checkbox"
-                  checked={homeStoreAsRaw}
-                  onChange={(e) => setHomeStoreAsRaw(e.target.checked)}
-                  className="rounded border-[#404040]"
-                />
-                记录为生重（如 100g 拉面/面条为生面，切到熟重时会按约 2.5 倍显示）
-              </label>
-              <p className="text-[10px] text-zinc-500">解析克数默认为熟重（可食用状态）；一碗拉面 ≈ 250～300g 熟面。</p>
+              <p className="text-[10px] text-zinc-500">
+                系统会为每个食材自动判断口径：干货/生食默认按生重（如 粉丝/燕麦/生肉），熟食/外卖默认按可食用重量；你也可以在输入里写“生重/干重”来强制识别。
+              </p>
               {(homeParsedResult.items && homeParsedResult.items.length > 0
                 ? homeParsedResult.items
                 : [
@@ -439,21 +437,141 @@ function App() {
                       fat: homeParsedResult.fat,
                     },
                   ]
-              ).map((item, idx) => {
+              ).map((item, idx, arr) => {
                 const kcal = Math.round(
                   (Number(item.protein) || 0) * 4 +
                     (Number(item.carbs) || 0) * 4 +
                     (Number(item.fat) || 0) * 9
                 )
+                const hasWeightType = typeof item.isRawWeight === 'boolean'
+                const weightTypeLabel = item.isRawWeight ? '生/干重' : '熟/可食用'
                 return (
                   <div
                     key={`${item.name}-${idx}`}
                     className="flex items-center justify-between gap-2 rounded-md bg-[#18181b] px-2 py-1"
                   >
                     <div className="min-w-0">
-                      <p className="truncate text-[12px] text-zinc-200">
-                        {item.name} · {Math.round(item.grams || 0)}g
-                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={item.name || ''}
+                          onChange={(e) => {
+                            const nextName = e.target.value
+                            setHomeParsedResult((prev) => {
+                              if (!prev) return prev
+                              const baseItems =
+                                prev.items && prev.items.length > 0
+                                  ? [...prev.items]
+                                  : [...arr]
+                              baseItems[idx] = { ...baseItems[idx], name: nextName }
+                              return {
+                                ...prev,
+                                items: prev.items && prev.items.length > 0 ? baseItems : undefined,
+                              }
+                            })
+                          }}
+                          className="min-w-0 flex-1 truncate rounded border border-[#404040] bg-[#111827] px-1.5 py-0.5 text-[12px] text-zinc-100"
+                          placeholder="食物名称"
+                        />
+                        {hasWeightType && (
+                          <span
+                            className="shrink-0 rounded border border-[#404040] bg-[#111827] px-1.5 py-0.5 text-[10px] text-zinc-400"
+                            title="该食材本次解析采用的重量口径"
+                          >
+                            {weightTypeLabel}
+                          </span>
+                        )}
+                        {arr.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setHomeParsedResult((prev) => {
+                                if (!prev) return prev
+                                const baseItems =
+                                  prev.items && prev.items.length > 0
+                                    ? prev.items.filter((_, i) => i !== idx)
+                                    : prev.items
+                                if (!baseItems || baseItems.length === 0) {
+                                  return null
+                                }
+                                const totals = baseItems.reduce(
+                                  (acc, it) => ({
+                                    protein: acc.protein + (Number(it.protein) || 0),
+                                    carbs: acc.carbs + (Number(it.carbs) || 0),
+                                    fat: acc.fat + (Number(it.fat) || 0),
+                                  }),
+                                  { protein: 0, carbs: 0, fat: 0 }
+                                )
+                                return {
+                                  ...prev,
+                                  items: baseItems,
+                                  protein: Math.round(totals.protein * 10) / 10,
+                                  carbs: Math.round(totals.carbs * 10) / 10,
+                                  fat: Math.round(totals.fat * 10) / 10,
+                                }
+                              })
+                            }}
+                            className="shrink-0 rounded-full px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-[#27272a] hover:text-red-400"
+                          >
+                            删除
+                          </button>
+                        )}
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-zinc-400">
+                        <span>克数</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={5}
+                          value={Math.round(item.grams || 0)}
+                          onChange={(e) => {
+                            const g = Math.max(0, Number(e.target.value) || 0)
+                            setHomeParsedResult((prev) => {
+                              if (!prev) return prev
+                              const baseItems =
+                                prev.items && prev.items.length > 0
+                                  ? [...prev.items]
+                                  : [
+                                      {
+                                        name: homeAiText || '本餐汇总',
+                                        grams: 100,
+                                        protein: prev.protein,
+                                        carbs: prev.carbs,
+                                        fat: prev.fat,
+                                      },
+                                    ]
+                              const old = baseItems[idx] || baseItems[0]
+                              const oldG = old.grams || 1
+                              const ratio = oldG > 0 ? g / oldG : 1
+                              const nextItem = {
+                                ...old,
+                                grams: g,
+                                protein: Math.round((Number(old.protein) || 0) * ratio * 10) / 10,
+                                carbs: Math.round((Number(old.carbs) || 0) * ratio * 10) / 10,
+                                fat: Math.round((Number(old.fat) || 0) * ratio * 10) / 10,
+                              }
+                              baseItems[idx] = nextItem
+                              const totals = baseItems.reduce(
+                                (acc, it) => ({
+                                  protein: acc.protein + (Number(it.protein) || 0),
+                                  carbs: acc.carbs + (Number(it.carbs) || 0),
+                                  fat: acc.fat + (Number(it.fat) || 0),
+                                }),
+                                { protein: 0, carbs: 0, fat: 0 }
+                              )
+                              return {
+                                ...prev,
+                                items: prev.items && prev.items.length > 0 ? baseItems : undefined,
+                                protein: Math.round(totals.protein * 10) / 10,
+                                carbs: Math.round(totals.carbs * 10) / 10,
+                                fat: Math.round(totals.fat * 10) / 10,
+                              }
+                            })
+                          }}
+                          className="w-16 rounded border border-[#404040] bg-[#111827] px-1.5 py-0.5 text-right text-[11px] text-zinc-100"
+                        />
+                        <span>g</span>
+                      </div>
                       <p className="text-[11px] text-zinc-500">
                         {kcal} kcal · P {Math.round(item.protein || 0)}g / C{' '}
                         {Math.round(item.carbs || 0)}g / F {Math.round(item.fat || 0)}g

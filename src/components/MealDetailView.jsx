@@ -125,9 +125,35 @@ export function MealDetailView({
         }
       : { protein: remaining.protein, carbs: remaining.carbs, fat: remaining.fat }
 
+  /** AI 本餐推荐缓存 key：按日期 + 训练模式 + 餐次名称区分，避免每次进入详情都重新走 LLM */
+  const aiCacheKey = useMemo(() => {
+    if (typeof window === 'undefined') return null
+    const now = new Date()
+    const y = now.getFullYear()
+    const m = String(now.getMonth() + 1).padStart(2, '0')
+    const d = String(now.getDate()).padStart(2, '0')
+    const mode = trainingMode || 'unknown'
+    return `the-body-ai-rec-${y}-${m}-${d}-${mode}-${meal.name}`
+  }, [trainingMode, meal.name])
+
   /** 仅切换餐次或点击「刷新推荐」时拉取；不依赖 remaining/consumed，避免「采用推荐」后误触发重新拉取 */
   useEffect(() => {
     if (!isAiRecommendedMeal) return
+    // 若有缓存且当前是首次进入（refresh key=0），直接用缓存结果，避免重复请求
+    if (aiCacheKey && recommendationRefreshKey === 0 && typeof window !== 'undefined') {
+      try {
+        const cached = window.sessionStorage.getItem(aiCacheKey)
+        if (cached) {
+          const parsed = JSON.parse(cached)
+          if (parsed && Array.isArray(parsed.items)) {
+            setAiRecommendationItems({ advice: parsed.advice || '', items: parsed.items })
+            return
+          }
+        }
+      } catch (_) {
+        // 缓存解析失败时忽略，正常发起请求
+      }
+    }
     setAiRecommendationItemsLoading(true)
     setAiRecommendationItemsError('')
     getMealRecommendationItems({
@@ -143,7 +169,17 @@ export function MealDetailView({
       trainingModeLabel,
       preferBreakfastAlternative: meal.name === '早餐' && recommendationRefreshKey > 0,
     })
-      .then((res) => setAiRecommendationItems({ advice: res.advice || '', items: res.items || [] }))
+      .then((res) => {
+        const next = { advice: res.advice || '', items: res.items || [] }
+        setAiRecommendationItems(next)
+        if (aiCacheKey && typeof window !== 'undefined') {
+          try {
+            window.sessionStorage.setItem(aiCacheKey, JSON.stringify(next))
+          } catch (_) {
+            // 缓存失败不影响正常使用
+          }
+        }
+      })
       .catch((err) => {
         setAiRecommendationItemsError(err?.message || 'AI 本餐推荐获取失败')
         setAiRecommendationItems({ advice: '', items: [] })
@@ -448,97 +484,7 @@ export function MealDetailView({
         <h2 className="text-lg font-semibold text-zinc-100">{meal.name}</h2>
       </div>
 
-      {/* 拍照/上传识别：选图后调用视觉模型得到描述，再解析并写入当前餐次 */}
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={handleImageClick}
-          disabled={aiLoading}
-          className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-dashed border-[#525252] py-4 text-[14px] text-zinc-400 transition hover:border-[#737373] hover:text-zinc-300 disabled:opacity-60"
-          style={{ backgroundColor: 'rgba(63,63,63,0.5)' }}
-        >
-          {aiLoading ? (
-            <Loader2 className="h-5 w-5 animate-spin" />
-          ) : (
-            <Camera className="h-5 w-5" />
-          )}
-          <span>拍照/上传识别</span>
-        </button>
-        <input
-          ref={imageInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={handleImageChange}
-        />
-        <button
-          type="button"
-          onClick={requestCameraPermission}
-          className="rounded-lg border border-[#404040] px-2 py-1.5 text-[12px] text-zinc-500"
-          title="检测相机权限（可选）"
-        >
-          相机
-        </button>
-      </div>
-
-      {/* 自然语言输入：如「我吃了两块全家鸡胸」；小话筒长按说话，中/英识别 */}
-      {typeof parseFoodTextAndRecord === 'function' && (
-        <div className="flex gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-[#404040] bg-[#393939] px-2 py-1.5">
-            <input
-              type="text"
-              value={aiTextInput}
-              onChange={(e) => { setAiTextInput(e.target.value); setAiParseError(''); setAiAdjustment('') }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  handleAiTextSubmit()
-                }
-              }}
-              placeholder="我吃了两块全家鸡胸"
-              className="min-w-0 flex-1 bg-transparent px-1.5 py-1 text-[13px] text-zinc-200 placeholder:text-zinc-500"
-            />
-            {speechSupport ? (
-              <button
-                type="button"
-                onClick={toggleSpeechRecognition}
-                className="flex items-center justify-center rounded-full p-2 transition"
-                style={{
-                  backgroundColor: isRecording ? 'rgba(239,68,68,0.25)' : 'transparent',
-                  color: isRecording ? '#f87171' : '#a1a1aa',
-                }}
-                title={isRecording ? '点击停止并结束录音' : '点击开始语音记录（中文/英文）'}
-              >
-                <Mic className="h-4 w-4" />
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => setSpeechLang((l) => (l === 'zh-CN' ? 'en-US' : 'zh-CN'))}
-              className="rounded px-1.5 py-1 text-[11px] text-zinc-500"
-              title={speechLang === 'zh-CN' ? '当前中文，点击切英文' : '当前英文，点击切中文'}
-            >
-              {speechLang === 'zh-CN' ? '中' : 'En'}
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={handleAiTextSubmit}
-            disabled={aiLoading}
-            className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium text-white disabled:opacity-60"
-            style={{ backgroundColor: '#404040' }}
-          >
-            {aiLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanLine className="h-4 w-4" />}
-            记录
-          </button>
-        </div>
-      )}
-      {aiParseError && (
-        <p className="text-[12px] text-amber-400">{aiParseError}</p>
-      )}
-      {aiAdjustment && (
-        <p className="text-[12px] text-zinc-400">说明：{aiAdjustment}</p>
-      )}
+      {/* 拍照/上传识别 & 文本识别：已在首页完成闭环，这里不再重复展示 */}
 
       {/* 今日摄入进度（与首页仪表盘一致）+ 今日剩余 + 本餐建议 + 熟重开关 */}
       <div className="rounded-xl border border-[#404040] p-4" style={{ backgroundColor: '#393939' }}>

@@ -233,4 +233,3 @@ export function getSuperBowlPer100ForName(name) {
   }
   return null
 }
-

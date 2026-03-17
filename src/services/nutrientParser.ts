@@ -3,7 +3,9 @@
  * 依赖 LLM 接口，需配置 API Key（如 VITE_OPENAI_API_KEY 或传入 options.apiKey）。
  */
 
-import { SUPER_BOWL_DB, formatSuperBowlDataForPrompt } from '../data/superBowlDatabase'
+import { SUPER_BOWL_DB, formatSuperBowlDataForPrompt, getSuperBowlPer100ForName } from '../data/superBowlDatabase'
+import { lookupFood } from './food-lookup'
+import { buildFoodParseSystemPrompt } from './parse-food-prompt'
 
 /** 练后大餐碳水锚点：150g 熟米饭 ≈ 42g 碳水 */
 export const CARBS_ANCHOR_G = 42
@@ -44,10 +46,12 @@ ${USER_PERSONA_SUMMARY}
 
 ## 一致性（重要：同一表述每次解析结果应稳定）
 - 同一或等价表述多次解析时，食物种类、份量(g)与 P/C/F 必须一致，不要前后矛盾。例如「一碗兰州拉面」始终按「拉面（面条）」解析，不得有时输出为米线、有时为面条。
-- 标准份量约定（一碗 = 一份；**输出 grams 均为熟重**，除非用户明确说生重/干面）：
+- 标准份量约定（一碗/一杯/一笼 = 一份；**输出 grams 均为熟重或可食用状态**，除非用户明确说生重/干面）：
   - 兰州拉面 / 拉面 / 牛肉面：一碗煮熟后面条约 250～300g（即 2～3 两生面煮好后的熟重），约 70g 碳水、20g 蛋白质。items 里拉面填 300g 表示 300g 熟面。若用户说「加白切肉」等，单独列一项白切肉（如 80g，对应 P/F）。
   - 云阿蛮米线 / 米线：米线约 300g（熟），按米线品类估算 P/C/F。
   - 米饭（一碗）：熟米饭约 150～200g。
+  - 黑咖啡 / 美式咖啡 / 美式：默认「一杯」约 250g 液体，若未提及糖和奶则 P/C/F 记为 0；若用户说「美式加少量牛奶」，按 250g 记录，其中牛奶部分按 50g 全脂牛奶估算 P/C/F，其余视为纯咖啡 0kcal。不得在同一天对「一杯美式」给出 100g/250g 等不同克重，必须固定为 250g。
+  - 小笼包：默认「一笼」= 8 只 ≈ 200g 熟重，小笼包单个约 25g。若用户说「一笼小笼包」，items 里给一条「小笼包 200g」；若说「3 个小笼包」，给 75g；若只说「几个小笼包」等模糊表达，可按 4 个≈100g 估算，并在 adjustment 中说明。不得在同一用户下将「一笼小笼包」解析为 150g/220g 等不同克重，必须固定为 200g。
 - 请举一反三处理「超级碗」「全家饭团」「老乡鸡葱油鸡」等，同类食物采用同一套份量与营养素估算。
 - **超级碗**：若用户说「半份谷物饭」「半份沙拉」等，请在 items 中仍输出「谷物饭/混合谷物饭」「沙拉/混合沙拉叶」等具体名称；系统会按「半份」自动将克数换算为 100g（谷物饭一份 200g、沙拉一份按 200g 计半份 100g）。你只需正确拆出底料、蛋白、配菜名称即可。
 
@@ -81,8 +85,20 @@ export interface NutrientParseResult {
   deltaCarbs: number
   adjustment: string | null
   /** 拆解后的食材与克数，用于卡片展示（如 米线 100g、牛肉 15g） */
-  items?: Array<{ name: string; grams: number; protein: number; carbs: number; fat: number }>
+  items?: Array<{
+    name: string
+    grams: number
+    /** 用户口径：true=生/干重；false=熟/可食用 */
+    isRawWeight?: boolean
+    protein: number
+    carbs: number
+    fat: number
+    /** 若数据库可提供，供入库/展示换算使用（熟重/生重） */
+    cookedPerRawRatio?: number
+  }>
 }
+
+type ParsedStructureItem = { name: string; query: string; grams: number; isRawWeight: boolean }
 
 /** 餐次类型，用于给模型上下文 */
 export type MealType =
@@ -109,7 +125,7 @@ export interface ParseMealInputOptions {
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
 const DEFAULT_MODEL = 'gpt-4o-mini'
 
-const env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {}
+const env = typeof import.meta !== 'undefined' && (import.meta as any)?.env ? (import.meta as any).env : {}
 
 /** 从环境变量读取 LLM 配置（支持 OpenAI / DeepSeek / 智谱 / 硅基流动 等兼容接口） */
 function getEnvConfig() {
@@ -123,6 +139,209 @@ function getEnvConfig() {
   return { apiKey, baseUrl, model, useProxy }
 }
 
+/** 估算「生重 -> 熟重」重量倍率（熟重/生重），用于首页勾选生重时的显示换算；结果应缓存复用以省 token */
+export async function estimateCookedPerRawRatio(foodName: string): Promise<{ cookedPerRawRatio: number; confidence: 'high' | 'medium' | 'low' }> {
+  const name = String(foodName || '').trim()
+  if (!name) return { cookedPerRawRatio: 1, confidence: 'low' }
+
+  const envConfig = getEnvConfig()
+  const apiKey = envConfig.apiKey
+  const useProxy = envConfig.useProxy
+  if (!useProxy && !apiKey?.trim()) {
+    return { cookedPerRawRatio: 1, confidence: 'low' }
+  }
+
+  const baseUrl = (envConfig.baseUrl || DEFAULT_BASE_URL).toString().replace(/\/$/, '')
+  const model = (envConfig.model || DEFAULT_MODEL).toString()
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (!useProxy && apiKey) headers.Authorization = `Bearer ${apiKey}`
+
+  const system = `你是一个严谨的营养记录助手。你的任务是估算「生重 -> 熟重（可食用状态）」的重量倍率 cookedPerRawRatio = 熟重/生重。只返回 JSON。`
+  const user = `食物：${name}\n请输出 JSON：{"cookedPerRawRatio": number, "confidence": "high"|"medium"|"low"}。\n要求：\n- cookedPerRawRatio 取典型家庭/外卖常见做法的中位数\n- 合理范围通常在 0.5~5 之间（肉类多为 <1；米面/粉丝多为 >1）\n- 若无法判断或该食物本身默认就是熟食（例如“烤鸡胸肉”），返回 cookedPerRawRatio=1 且 confidence=low`
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0,
+      max_tokens: 120,
+    }),
+  })
+  if (!res.ok) return { cookedPerRawRatio: 1, confidence: 'low' }
+  const data = (await res.json().catch(() => ({}))) as any
+  const content = data?.choices?.[0]?.message?.content ?? ''
+  const jsonStr = String(content).replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim()
+  try {
+    const obj = JSON.parse(jsonStr)
+    const ratio = Number(obj?.cookedPerRawRatio)
+    const conf = obj?.confidence
+    const cookedPerRawRatio = !Number.isFinite(ratio) ? 1 : Math.max(0.2, Math.min(5, ratio))
+    const confidence = conf === 'high' || conf === 'medium' || conf === 'low' ? conf : 'low'
+    return { cookedPerRawRatio, confidence }
+  } catch {
+    return { cookedPerRawRatio: 1, confidence: 'low' }
+  }
+}
+
+/** 针对「超级碗 + 果木烟熏鸡胸」等固定套餐的硬编码解析：命中则直接按数据库展开组合，跳过 LLM */
+function tryBuildSuperBowlComboFromText(text: string): NutrientParseResult | null {
+  if (!text || typeof text !== 'string') return null
+  const t = text.toLowerCase()
+  if (!t.includes('超级碗')) return null
+
+  const hasSuperBowlWord = /超级碗/.test(text)
+
+  // 只要出现「超级碗 + 套餐」，一律视为整碗（套餐是关键），不受是否提到具体配料名影响
+  const isWholeBowl = hasSuperBowlWord && /套餐/.test(text)
+  if (isWholeBowl) {
+    const db = SUPER_BOWL_DB.database
+
+    const findByNameInList = (list: Array<{ name: string }>) => {
+      for (const x of list) {
+        const n = (x?.name || '').trim()
+        if (!n) continue
+        if (text.includes(n)) return n
+      }
+      return null
+    }
+
+    // 套餐蛋白质识别：支持「鸡腿肉/鸡胸肉/牛肉/虾/三文鱼/豆腐/金枪鱼」等通用说法映射到超级碗 DB 的具体条目
+    const pickedProtein = (() => {
+      if (/鸡腿/.test(text)) return '蜜汁鸡腿'
+      if (/鸡胸/.test(text)) return '果木烟熏鸡胸'
+      if (/牛腩|牛肉/.test(text)) return '番茄牛腩'
+      if (/虾/.test(text)) return '亚麻籽油烤虾'
+      if (/三文鱼/.test(text)) return '香煎三文鱼'
+      if (/豆腐/.test(text)) return '日式七味豆腐'
+      if (/金枪鱼/.test(text)) return '油浸金枪鱼'
+      // 若套餐文案里包含具体蛋白质全称，优先用该蛋白；否则默认果木烟熏鸡胸
+      return findByNameInList(db.proteins) || '果木烟熏鸡胸'
+    })()
+    // 若套餐文案里包含具体酱汁名，优先用该酱；否则默认融合油醋汁
+    const sauceFlat: Array<{ name: string }> = Object.values(db.sauces || {}).flat() as any
+    const pickedSauce = findByNameInList(sauceFlat) || '融合油醋汁'
+
+    type Spec = { name: string; grams: number }
+    const specs: Spec[] = [
+      { name: '混合谷物饭', grams: 200 },
+      { name: '混合沙拉叶', grams: 90 },
+      { name: '混合烤蔬菜', grams: 100 },
+      { name: pickedProtein, grams: 100 },
+      { name: pickedSauce, grams: 30 },
+    ]
+
+    const items: NonNullable<NutrientParseResult['items']> = []
+    let totalP = 0
+    let totalC = 0
+    let totalF = 0
+
+    for (const spec of specs) {
+      const per = getSuperBowlPer100ForName(spec.name) || {
+        proteinPer100: 0,
+        carbsPer100: 0,
+        fatPer100: 0,
+      }
+      const factor = spec.grams / 100
+      const p = Math.round(per.proteinPer100 * factor * 10) / 10
+      const c = Math.round(per.carbsPer100 * factor * 10) / 10
+      const f = Math.round(per.fatPer100 * factor * 10) / 10
+      totalP += p
+      totalC += c
+      totalF += f
+      items.push({ name: spec.name, grams: spec.grams, protein: p, carbs: c, fat: f })
+    }
+
+    const protein = Math.round(totalP * 10) / 10
+    const carbs = Math.round(totalC * 10) / 10
+    const fat = Math.round(totalF * 10) / 10
+    const deltaCarbs = Math.round((carbs - CARBS_ANCHOR_G) * 10) / 10
+
+    return {
+      protein,
+      carbs,
+      fat,
+      deltaCarbs,
+      adjustment:
+        '已按超级碗数据库「套餐」记录整碗（谷物饭底+蛋白+沙拉+蔬菜+酱汁）。如当天实际搭配有差异，可在首页调整克数。',
+      items,
+    }
+  }
+
+  /**
+   * 只要句子里提到了「超级碗」且包含任意具体配料名（蛋白/底料/蔬菜/酱/toppings/饮品等），
+   * 一律按「单独配料」处理：从 SUPER_BOWL_DB 中取标准份量与宏量，直接返回 1 条 items，跳过 LLM。
+   */
+  if (hasSuperBowlWord) {
+    const db = SUPER_BOWL_DB.database
+
+    type Row = { name: string; size?: string; protein?: number; carbs?: number; fat?: number }
+    const rows: Row[] = []
+    const pushRows = (arr?: Array<any>) => {
+      if (!Array.isArray(arr)) return
+      arr.forEach((x) => {
+        if (!x?.name) return
+        rows.push({ name: String(x.name), size: x.size, protein: x.protein, carbs: x.carbs, fat: x.fat })
+      })
+    }
+    pushRows(db.carbonates_base)
+    pushRows(db.proteins)
+    pushRows(db.dietary_fiber)
+    pushRows(db.toppings)
+    Object.values(db.sauces || {}).forEach((grp: any) => pushRows(grp as any))
+    pushRows(db.snacks_and_drinks)
+
+    // 找到文本中出现的“最具体（最长）”的配料名
+    const matched = rows
+      .filter((r) => r?.name && text.includes(r.name))
+      .sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0))[0]
+
+    if (!matched) return null
+
+    // 解析标准份量：优先从 size 取（g/ml/只）
+    const size = String(matched.size || '').trim()
+    const gMatch = /(\d+(?:\.\d+)?)\s*g/i.exec(size)
+    const mlMatch = /(\d+(?:\.\d+)?)\s*ml/i.exec(size)
+    const pieceMatch = /(\d+)\s*只/.exec(size)
+    const grams = gMatch ? Number(gMatch[1]) : mlMatch ? Number(mlMatch[1]) : pieceMatch ? Number(pieceMatch[1]) : 100
+
+    // 计算 P/C/F：若是“只”的规格（如烤虾 6只），直接使用该份的宏量；否则按每100g换算
+    if (pieceMatch) {
+      const p = Math.round((Number(matched.protein) || 0) * 10) / 10
+      const c = Math.round((Number(matched.carbs) || 0) * 10) / 10
+      const f = Math.round((Number(matched.fat) || 0) * 10) / 10
+      return {
+        protein: p,
+        carbs: c,
+        fat: f,
+        deltaCarbs: Math.round((c - CARBS_ANCHOR_G) * 10) / 10,
+        adjustment: `已按超级碗数据库记录一份「${matched.name}」${size || ''}。如实际份量不同，可在首页调整。`,
+        items: [{ name: `${matched.name}${size ? `（${size}）` : ''}`, grams, protein: p, carbs: c, fat: f }],
+      }
+    }
+
+    const per = getSuperBowlPer100ForName(matched.name) || { proteinPer100: 0, carbsPer100: 0, fatPer100: 0 }
+    const factor = grams / 100
+    const p = Math.round(per.proteinPer100 * factor * 10) / 10
+    const c = Math.round(per.carbsPer100 * factor * 10) / 10
+    const f = Math.round(per.fatPer100 * factor * 10) / 10
+    return {
+      protein: p,
+      carbs: c,
+      fat: f,
+      deltaCarbs: Math.round((c - CARBS_ANCHOR_G) * 10) / 10,
+      adjustment: `已按超级碗数据库记录一份「${matched.name}」${grams}${mlMatch ? 'ml' : 'g'}。如实际份量不同，可在首页调整克数。`,
+      items: [{ name: matched.name, grams, protein: p, carbs: c, fat: f }],
+    }
+  }
+
+  return null
+}
+
 /**
  * 调用 LLM 解析用户输入，返回 P/C/F 及 deltaCarbs。
  * 支持 OpenAI、DeepSeek、智谱、通义、Moonshot 等兼容 OpenAI 格式的接口。
@@ -132,6 +351,11 @@ export async function parseMealInput(
   currentMealType: MealType,
   options: ParseMealInputOptions = {}
 ): Promise<NutrientParseResult> {
+  // 先尝试命中超级碗等固定套餐，命中则直接按数据库展开并跳过 LLM
+  const superBowlCombo = tryBuildSuperBowlComboFromText(text)
+  if (superBowlCombo) return superBowlCombo
+
+  // ---------- 第一步：LLM 只解析结构（items 不含营养数值） ----------
   const envConfig = getEnvConfig()
   const apiKey = options.apiKey ?? envConfig.apiKey
   const useProxy = envConfig.useProxy && !options.apiKey && !options.baseUrl
@@ -142,10 +366,10 @@ export async function parseMealInput(
   const baseUrl = (options.baseUrl ?? (envConfig.baseUrl || DEFAULT_BASE_URL)).toString().replace(/\/$/, '')
   const model = (options.model ?? (envConfig.model || DEFAULT_MODEL)).toString()
 
-  const userMessage = `当前餐次：${currentMealType}\n用户输入：${text}\n请仅返回上述 JSON，不要其它内容。`
-
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (!useProxy && apiKey) headers.Authorization = `Bearer ${apiKey}`
+
+  const userMessage = `当前餐次：${currentMealType}\n用户输入：${text}\n请仅返回上述 JSON，不要其它内容。`
 
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
@@ -153,10 +377,10 @@ export async function parseMealInput(
     body: JSON.stringify({
       model,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: buildFoodParseSystemPrompt() },
         { role: 'user', content: userMessage },
       ],
-      temperature: 0,  // 同一输入尽量得到相同解析，提高稳定性
+      temperature: 0,
       max_tokens: 800,
     }),
   })
@@ -169,7 +393,7 @@ export async function parseMealInput(
   const data = (await res.json()) as Record<string, unknown>
   const firstChoice = Array.isArray(data?.choices) ? data.choices[0] : undefined
   const msg = firstChoice && typeof firstChoice === 'object' && firstChoice !== null ? (firstChoice as Record<string, unknown>).message : undefined
-  const messageObj = msg && typeof msg === 'object' && msg !== null ? msg as Record<string, unknown> : undefined
+  const messageObj = msg && typeof msg === 'object' && msg !== null ? (msg as Record<string, unknown>) : undefined
   let content = typeof messageObj?.content === 'string' ? messageObj.content.trim() : ''
   if (!content && typeof (firstChoice as Record<string, unknown>)?.text === 'string') {
     content = ((firstChoice as Record<string, unknown>).text as string).trim()
@@ -180,49 +404,139 @@ export async function parseMealInput(
   }
 
   const jsonStr = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim()
-  let parsed: unknown
+  let parsed: any
   try {
     parsed = JSON.parse(jsonStr)
   } catch {
     throw new Error(`LLM 返回非合法 JSON: ${content.slice(0, 200)}`)
   }
 
-  const obj = parsed as Record<string, unknown>
-  const protein = Number(obj?.protein)
-  const carbs = Number(obj?.carbs)
-  const fat = Number(obj?.fat)
-  const deltaCarbs = Number(obj?.deltaCarbs)
+  const structureItems: ParsedStructureItem[] = Array.isArray(parsed?.items)
+    ? parsed.items
+        .map((it: any) => ({
+          name: String(it?.name || '').trim(),
+          query: String(it?.query || it?.name || '').trim(),
+          grams: Math.max(0, Number(it?.grams) || 0),
+          isRawWeight: Boolean(it?.isRawWeight),
+        }))
+        .filter((it: ParsedStructureItem) => it.name && it.query && it.grams > 0)
+    : []
 
-  if (Number.isNaN(protein) || Number.isNaN(carbs) || Number.isNaN(fat)) {
-    throw new Error(`解析结果缺少有效 P/C/F: ${jsonStr.slice(0, 200)}`)
+  const adjustment = typeof parsed?.adjustment === 'string' ? parsed.adjustment : null
+
+  if (structureItems.length === 0) {
+    // 没解析出结构，降级：让旧 LLM 直接估算（保证不崩）
+    throw new Error('未解析到具体食材项，可尝试补充克数/数量。')
   }
 
-  const result: NutrientParseResult = {
-    protein: Math.round(protein * 10) / 10,
-    carbs: Math.round(carbs * 10) / 10,
-    fat: Math.round(fat * 10) / 10,
-    deltaCarbs: Number.isNaN(deltaCarbs) ? carbs - CARBS_ANCHOR_G : Math.round(deltaCarbs * 10) / 10,
-    adjustment: typeof obj?.adjustment === 'string' ? obj.adjustment : null,
-  }
-
-  if (Array.isArray(obj?.items) && obj.items.length > 0) {
-    result.items = (obj.items as Array<Record<string, unknown>>).map((it) => {
-      const grams = Math.max(0, Number(it?.grams) ?? 0)
-      const protein = Number(it?.protein) || 0
-      const carbs = Number(it?.carbs) || 0
-      const fat = Number(it?.fat) || 0
+  // ---------- 第二步：逐项查数据库并计算营养（查不到才单项兜底估算） ----------
+  async function fallbackEstimateOne(item: ParsedStructureItem): Promise<{ protein: number; carbs: number; fat: number }> {
+    const sys = `估算以下食物的营养数值（per 100g，${item.isRawWeight ? '生重/干重' : '熟重'}口径）。只返回 JSON：{"protein":number,"carbs":number,"fat":number}`
+    const user = `食物：${item.name}`
+    const r = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: sys },
+          { role: 'user', content: user },
+        ],
+        temperature: 0,
+        max_tokens: 120,
+      }),
+    })
+    if (!r.ok) return { protein: 0, carbs: 0, fat: 0 }
+    const d = await r.json().catch(() => ({} as any))
+    const c = d?.choices?.[0]?.message?.content ?? ''
+    const s = String(c).replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim()
+    try {
+      const o = JSON.parse(s)
       return {
-        name: String(it?.name ?? ''),
-        grams: grams || 100,
+        protein: Math.max(0, Number(o?.protein) || 0),
+        carbs: Math.max(0, Number(o?.carbs) || 0),
+        fat: Math.max(0, Number(o?.fat) || 0),
+      }
+    } catch {
+      return { protein: 0, carbs: 0, fat: 0 }
+    }
+  }
+
+  const enrichedItems = await Promise.all(
+    structureItems.map(async (it) => {
+      const lookup = await lookupFood(it.query)
+      const per100 = lookup.entry
+      let proteinPer100 = per100?.protein ?? 0
+      let carbsPer100 = per100?.carbs ?? 0
+      let fatPer100 = per100?.fat ?? 0
+
+      let cookedPerRawRatio: number | undefined = undefined
+      if (per100) cookedPerRawRatio = typeof per100.cookedPerRawRatio === 'number' && per100.cookedPerRawRatio > 0 ? per100.cookedPerRawRatio : undefined
+
+      if (!per100) {
+        const est = await fallbackEstimateOne(it)
+        proteinPer100 = est.protein
+        carbsPer100 = est.carbs
+        fatPer100 = est.fat
+      } else {
+        // 数据库有明确口径：根据「用户口径 it.isRawWeight」与「数据库口径 per100.isRawWeight」做必要换算
+        // cookedPerRawRatio = 熟重/生重；rawToCookedRatio = 生重/熟重 = 1 / cookedPerRawRatio
+        const dbIsRaw = !!per100.isRawWeight
+        const userIsRaw = !!it.isRawWeight
+        if (dbIsRaw !== userIsRaw && cookedPerRawRatio && Number.isFinite(cookedPerRawRatio) && cookedPerRawRatio > 0) {
+          const r = cookedPerRawRatio
+          if (dbIsRaw && !userIsRaw) {
+            // DB 是生重/干重 per100g，用户填的是熟重克数 => per100(熟) = per100(生) / (熟/生)
+            proteinPer100 = proteinPer100 / r
+            carbsPer100 = carbsPer100 / r
+            fatPer100 = fatPer100 / r
+          } else if (!dbIsRaw && userIsRaw) {
+            // DB 是熟重 per100g，用户填的是生重克数 => per100(生) = per100(熟) * (熟/生)
+            proteinPer100 = proteinPer100 * r
+            carbsPer100 = carbsPer100 * r
+            fatPer100 = fatPer100 * r
+          }
+        }
+      }
+
+      const multiplier = it.grams / 100
+      const protein = Math.round(proteinPer100 * multiplier * 10) / 10
+      const carbs = Math.round(carbsPer100 * multiplier * 10) / 10
+      const fat = Math.round(fatPer100 * multiplier * 10) / 10
+      return {
+        name: it.name,
+        grams: it.grams,
+        isRawWeight: it.isRawWeight,
+        cookedPerRawRatio,
         protein,
         carbs,
         fat,
       }
     })
+  )
+
+  const totals = enrichedItems.reduce(
+    (acc, it) => ({
+      protein: acc.protein + (Number(it.protein) || 0),
+      carbs: acc.carbs + (Number(it.carbs) || 0),
+      fat: acc.fat + (Number(it.fat) || 0),
+    }),
+    { protein: 0, carbs: 0, fat: 0 }
+  )
+
+  const protein = Math.round(totals.protein * 10) / 10
+  const carbs = Math.round(totals.carbs * 10) / 10
+  const fat = Math.round(totals.fat * 10) / 10
+
+  return {
+    protein,
+    carbs,
+    fat,
+    deltaCarbs: Math.round((carbs - CARBS_ANCHOR_G) * 10) / 10,
+    adjustment,
+    items: enrichedItems,
   }
 
-  const withDb = applySuperBowlDatabase(text, result)
-  return normalizeComboItems(text, withDb)
 }
 
 /** 从原文中解析与某食材相关的份量倍数（半份→0.5，一份→1，两份→2） */
