@@ -371,7 +371,12 @@ function tryBuildSuperBowlComboFromText(text: string): NutrientParseResult | nul
 /** 饿梨酱（Olu's Bowl）组合碗硬解析：命中则直接按本地 food-database 展开组合，跳过 LLM */
 async function tryBuildOlusBowlFromText(text: string): Promise<NutrientParseResult | null> {
   if (!text || typeof text !== 'string') return null
-  const hasOlus = /饿梨酱|olu'?s?\s*bowl|olus?\b/i.test(text)
+  // 语音识别常把「饿梨酱」听成「鳄梨酱」：需要覆盖。但要避免把“鳄梨酱(作为酱料)”误判成品牌。
+  // 规则：若出现「饿梨酱/olu's bowl」则直接命中；若出现「鳄梨酱」则必须同时出现饿梨酱的典型菜单关键词才命中。
+  const hasExplicitOlus = /饿梨酱|olu'?s?\s*bowl|olus?\b/i.test(text)
+  const hasAvoHomophone = /鳄梨酱/.test(text)
+  const hasOlusMenuHint = /(随心碗|慢炖小猪猪|慢炖小牛牛|炙烤鸡腿排|香菜青柠糙米|香菜青柠白米|蒜香黄油饭|土豆泥|卷饼|时蔬法嘿塔|黑豆|番茄莎莎|玉米莎莎|罗马生菜|腌辣椒圈|秘制酸辣酱|是拉差奶油酱|香菜青柠酱|清新酸奶酱)/.test(text)
+  const hasOlus = hasExplicitOlus || (hasAvoHomophone && hasOlusMenuHint)
   if (!hasOlus) return null
 
   const isWholeBowl = /随心碗|一碗|这个碗|那碗|碗|bowl/i.test(text)
