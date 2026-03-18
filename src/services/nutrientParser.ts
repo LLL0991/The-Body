@@ -368,6 +368,143 @@ function tryBuildSuperBowlComboFromText(text: string): NutrientParseResult | nul
   return null
 }
 
+/** 饿梨酱（Olu's Bowl）组合碗硬解析：命中则直接按本地 food-database 展开组合，跳过 LLM */
+async function tryBuildOlusBowlFromText(text: string): Promise<NutrientParseResult | null> {
+  if (!text || typeof text !== 'string') return null
+  const hasOlus = /饿梨酱|olu'?s?\s*bowl|olus?\b/i.test(text)
+  if (!hasOlus) return null
+
+  const isWholeBowl = /随心碗|一碗|这个碗|那碗|碗|bowl/i.test(text)
+
+  // 识别单项（提到饿梨酱但未明确是“一碗”）时，如果命中具体食材则只记该项
+  if (!isWholeBowl) {
+    const singleCandidates = [
+      '炙烤鸡腿排',
+      '慢炖小牛牛',
+      '慢炖小猪猪',
+      '炙烤牛排',
+      '墨式文火豆腐',
+      '墨式酸辣小肉',
+      '香菜青柠糙米',
+      '香菜青柠白米',
+      '蒜香黄油饭',
+      '土豆泥',
+      '卷饼',
+      '时蔬法嘿塔',
+      '黑豆',
+      '番茄莎莎',
+      '玉米莎莎',
+      '罗马生菜',
+      '腌辣椒圈',
+      '招牌鳄梨酱',
+      '秘制酸辣酱',
+      '是拉差奶油酱',
+      '香菜青柠酱',
+      '清新酸奶酱',
+      '芝士碎',
+    ]
+    const hit = singleCandidates.find((n) => text.includes(n))
+    if (hit) {
+      const lookup = await lookupFood(hit)
+      const entry = lookup.entry
+      if (!entry) return null
+      const grams = entry.defaultGrams
+      const factor = grams / 100
+      const p = Math.round((entry.protein * factor) * 10) / 10
+      const c = Math.round((entry.carbs * factor) * 10) / 10
+      const f = Math.round((entry.fat * factor) * 10) / 10
+      return {
+        protein: p,
+        carbs: c,
+        fat: f,
+        deltaCarbs: Math.round((c - CARBS_ANCHOR_G) * 10) / 10,
+        adjustment: `已按饿梨酱数据库记录单项「${hit}」${grams}g。`,
+        items: [{ name: hit, grams, isRawWeight: false, protein: p, carbs: c, fat: f }],
+      }
+    }
+    return null
+  }
+
+  // --- 组合碗默认结构：蛋白 + 主食 + 配菜 + 酱（用户可在文本中指定糙米/奶油酱等） ---
+  const pickOne = (options: Array<{ test: RegExp; name: string }>, fallback: string) => {
+    const found = options.find((o) => o.test.test(text))
+    return found ? found.name : fallback
+  }
+
+  const pickedProtein = pickOne(
+    [
+      { test: /炙烤鸡腿排|鸡腿排/, name: '炙烤鸡腿排' },
+      { test: /慢炖小牛牛|慢炖牛/, name: '慢炖小牛牛' },
+      { test: /慢炖小猪猪|慢炖猪/, name: '慢炖小猪猪' },
+      { test: /炙烤牛排/, name: '炙烤牛排' },
+      { test: /墨式文火豆腐|豆腐/, name: '墨式文火豆腐' },
+      { test: /墨式酸辣小肉|酸辣猪/, name: '墨式酸辣小肉' },
+    ],
+    '炙烤鸡腿排'
+  )
+
+  const pickedBase = pickOne(
+    [
+      { test: /香菜青柠糙米|糙米/, name: '香菜青柠糙米' },
+      { test: /香菜青柠白米|白米/, name: '香菜青柠白米' },
+      { test: /蒜香黄油饭|黄油饭/, name: '蒜香黄油饭' },
+      { test: /土豆泥/, name: '土豆泥' },
+      { test: /卷饼/, name: '卷饼' },
+    ],
+    '香菜青柠糙米'
+  )
+
+  const pickedSauce = pickOne(
+    [
+      { test: /是拉差奶油酱|奶油酱/, name: '是拉差奶油酱' },
+      { test: /招牌鳄梨酱|鳄梨酱/, name: '招牌鳄梨酱' },
+      { test: /秘制酸辣酱|酸辣酱/, name: '秘制酸辣酱' },
+      { test: /香菜青柠酱|青柠酱/, name: '香菜青柠酱' },
+      { test: /清新酸奶酱|酸奶酱/, name: '清新酸奶酱' },
+    ],
+    '招牌鳄梨酱'
+  )
+
+  const baseSides = ['时蔬法嘿塔', '黑豆', '罗马生菜', '番茄莎莎']
+  const extras: string[] = []
+  if (/玉米莎莎|玉米/.test(text)) extras.push('玉米莎莎')
+  if (/腌辣椒圈|辣椒圈|jalapeno/i.test(text)) extras.push('腌辣椒圈')
+  if (/芝士碎|芝士/.test(text)) extras.push('芝士碎')
+  // 若用户明确说“不加黑豆/不要豆”，则移除黑豆
+  const sides = /不加黑豆|不要黑豆|不加豆|不要豆/.test(text)
+    ? baseSides.filter((n) => n !== '黑豆')
+    : baseSides
+
+  const names = [pickedProtein, pickedBase, ...sides, pickedSauce, ...extras]
+
+  const items: NonNullable<NutrientParseResult['items']> = []
+  let totalP = 0, totalC = 0, totalF = 0
+  for (const n of names) {
+    const lookup = await lookupFood(n)
+    const entry = lookup.entry
+    if (!entry) continue
+    const grams = entry.defaultGrams
+    const factor = grams / 100
+    const p = Math.round(entry.protein * factor * 10) / 10
+    const c = Math.round(entry.carbs * factor * 10) / 10
+    const f = Math.round(entry.fat * factor * 10) / 10
+    totalP += p; totalC += c; totalF += f
+    items.push({ name: n, grams, isRawWeight: false, protein: p, carbs: c, fat: f })
+  }
+  if (!items.length) return null
+  const protein = Math.round(totalP * 10) / 10
+  const carbs = Math.round(totalC * 10) / 10
+  const fat = Math.round(totalF * 10) / 10
+  return {
+    protein,
+    carbs,
+    fat,
+    deltaCarbs: Math.round((carbs - CARBS_ANCHOR_G) * 10) / 10,
+    adjustment: '已按饿梨酱数据库记录「随心碗」组合（蛋白+主食+配菜+酱）。如实际选项不同，可在预览中增删/改克数。',
+    items,
+  }
+}
+
 /**
  * 调用 LLM 解析用户输入，返回 P/C/F 及 deltaCarbs。
  * 支持 OpenAI、DeepSeek、智谱、通义、Moonshot 等兼容 OpenAI 格式的接口。
@@ -380,6 +517,10 @@ export async function parseMealInput(
   // 先尝试命中超级碗等固定套餐，命中则直接按数据库展开并跳过 LLM
   const superBowlCombo = tryBuildSuperBowlComboFromText(text)
   if (superBowlCombo) return superBowlCombo
+
+  // 再尝试命中饿梨酱组合碗（确定性展开）
+  const olusCombo = await tryBuildOlusBowlFromText(text)
+  if (olusCombo) return olusCombo
 
   // ---------- 第一步：LLM 只解析结构（items 不含营养数值） ----------
   const envConfig = getEnvConfig()

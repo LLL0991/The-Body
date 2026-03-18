@@ -234,6 +234,178 @@ export const FOOD_DATABASE: Record<string, FoodEntry> = {
     note: '按全家标准饭团估算'
   },
 
+  // ─── 饿梨酱（Olu's Bowl）外卖数据（宏量按热量与食物类型推算，待店内核实） ─────────────────
+  // 数据来源：外卖平台官方热量表；官方未提供处在 note 中标注待核实
+  // ─── 蛋白质 ────────────────────────────────────────────────
+  'olus-slow-pork': {
+    aliases: ['慢炖小猪猪', '饿梨酱慢炖猪'],
+    defaultGrams: 113, unit: '份',
+    protein: 22, carbs: 2, fat: 9, // 210kcal 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 210kcal/113g，P/C/F 待店内核实',
+  },
+  'olus-slow-beef': {
+    aliases: ['慢炖小牛牛', '饿梨酱慢炖牛'],
+    defaultGrams: 113, unit: '份',
+    protein: 26, carbs: 0, fat: 6, // 170kcal 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 170kcal/113g，P/C/F 待店内核实',
+  },
+  'olus-grilled-beef': {
+    aliases: ['炙烤牛排', '饿梨酱炙烤牛排'],
+    defaultGrams: 113, unit: '份',
+    protein: 26, carbs: 0, fat: 5, // 150kcal 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 150kcal/113g，P/C/F 待店内核实',
+  },
+  'olus-grilled-chicken': {
+    aliases: ['炙烤鸡腿排', '饿梨酱炙烤鸡腿'],
+    defaultGrams: 113, unit: '份',
+    protein: 28, carbs: 0, fat: 8, // 180kcal 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 180kcal/113g，P/C/F 待店内核实（⭐建议补精确 P/C/F）',
+  },
+  'olus-spicy-pork': {
+    aliases: ['墨式酸辣小肉', '饿梨酱酸辣猪肉'],
+    defaultGrams: 113, unit: '份',
+    protein: 22, carbs: 2, fat: 9, // 210kcal 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 210kcal/113g，P/C/F 待店内核实',
+  },
+  'olus-tofu': {
+    aliases: ['墨式文火豆腐', '饿梨酱豆腐'],
+    defaultGrams: 113, unit: '份',
+    protein: 10, carbs: 6, fat: 8, // 150kcal 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 150kcal/113g，P/C/F 待店内核实',
+  },
+
+  // ─── 主食 ────────────────────────────────────────────────
+  'olus-cilantro-white-rice': {
+    aliases: ['香菜青柠白米', '饿梨酱白米'],
+    defaultGrams: 130, unit: '份',
+    protein: 2.3, carbs: 23, fat: 1.5, // 146kcal/100g 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 190kcal/130g',
+  },
+  'olus-cilantro-brown-rice': {
+    aliases: ['香菜青柠糙米', '饿梨酱糙米'],
+    defaultGrams: 130, unit: '份',
+    protein: 3, carbs: 22, fat: 2, // 146kcal/100g 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 190kcal/130g',
+  },
+  'olus-garlic-butter-rice': {
+    aliases: ['蒜香黄油饭', '饿梨酱黄油饭'],
+    defaultGrams: 130, unit: '份',
+    protein: 2, carbs: 22, fat: 5, // 162kcal/100g 推算，黄油脂肪偏高
+    isRawWeight: false,
+    note: '饿梨酱官方 210kcal/130g',
+  },
+  'olus-mashed-potato': {
+    aliases: ['土豆泥', '饿梨酱土豆泥'],
+    defaultGrams: 130, unit: '份',
+    protein: 1.5, carbs: 14, fat: 2.5, // 92kcal/100g 推算，含黄油
+    isRawWeight: false,
+    note: '饿梨酱官方 120kcal/130g，是否含黄油待核实（⭐）',
+  },
+  'olus-burrito': {
+    aliases: ['卷饼', '饿梨酱卷饼'],
+    defaultGrams: 104, unit: '份',
+    protein: 8, carbs: 52, fat: 8, // 305kcal/100g 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 317kcal/104g，按墨西哥卷饼估算',
+  },
+
+  // ─── 配菜 ────────────────────────────────────────────────
+  'olus-vegetables': {
+    aliases: ['时蔬法嘿塔', '饿梨酱时蔬'],
+    defaultGrams: 70, unit: '份',
+    protein: 1, carbs: 3, fat: 0,
+    isRawWeight: false,
+    note: '饿梨酱官方 20kcal/70g',
+  },
+  'olus-black-beans': {
+    aliases: ['黑豆', '饿梨酱黑豆'],
+    defaultGrams: 50, unit: '份',
+    protein: 4, carbs: 9, fat: 0.5,
+    isRawWeight: false,
+    note: '饿梨酱官方 60kcal/50g',
+  },
+  'olus-tomato-salsa': {
+    aliases: ['番茄莎莎', '饿梨酱番茄莎莎'],
+    defaultGrams: 70, unit: '份',
+    protein: 0.5, carbs: 4, fat: 0,
+    isRawWeight: false,
+    note: '饿梨酱官方 20kcal/70g',
+  },
+  'olus-corn-salsa': {
+    aliases: ['玉米莎莎', '饿梨酱玉米莎莎'],
+    defaultGrams: 70, unit: '份',
+    protein: 2, carbs: 13, fat: 0.5,
+    isRawWeight: false,
+    note: '饿梨酱官方 60kcal/70g',
+  },
+  'olus-romaine': {
+    aliases: ['罗马生菜', '饿梨酱生菜'],
+    defaultGrams: 40, unit: '份',
+    protein: 0.5, carbs: 1, fat: 0,
+    isRawWeight: false,
+    note: '饿梨酱官方 5kcal/40g',
+  },
+  'olus-pickled-jalapeno': {
+    aliases: ['腌辣椒圈', '饿梨酱辣椒圈'],
+    defaultGrams: 20, unit: '份',
+    protein: 0, carbs: 1, fat: 0,
+    isRawWeight: false,
+    note: '饿梨酱官方 5kcal/20g',
+  },
+
+  // ─── 酱料 ────────────────────────────────────────────────
+  // ⚠️ 以下酱料官方未提供克数（部分），P/C/F 待店内核实
+  'olus-avocado-sauce': {
+    aliases: ['招牌鳄梨酱', '饿梨酱鳄梨酱'],
+    defaultGrams: 40, unit: '份', // 克数未知，按常见酱料份量估 40g
+    protein: 1, carbs: 3, fat: 14, // 170kcal 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 170kcal/份，克数未知待核实（⭐）',
+  },
+  'olus-spicy-sauce': {
+    aliases: ['秘制酸辣酱', '饿梨酱酸辣酱'],
+    defaultGrams: 30, unit: '份',
+    protein: 0.5, carbs: 4, fat: 0.5,
+    isRawWeight: false,
+    note: '饿梨酱官方 20kcal/30g',
+  },
+  'olus-sriracha-cream': {
+    aliases: ['是拉差奶油酱', '饿梨酱奶油酱'],
+    defaultGrams: 30, unit: '份', // 克数未知，待核实
+    protein: 0.5, carbs: 3, fat: 8, // 90kcal 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 90kcal/份，克数未知待核实（⭐）',
+  },
+  'olus-cilantro-lime-sauce': {
+    aliases: ['香菜青柠酱', '饿梨酱青柠酱'],
+    defaultGrams: 28, unit: '份',
+    protein: 0.5, carbs: 4, fat: 9, // 110kcal/28g 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 110kcal/28g',
+  },
+  'olus-yogurt-sauce': {
+    aliases: ['清新酸奶酱', '饿梨酱酸奶酱'],
+    defaultGrams: 56, unit: '份',
+    protein: 2, carbs: 8, fat: 8, // 120kcal/56g 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 120kcal/56g',
+  },
+  'olus-cheese': {
+    aliases: ['芝士碎', '饿梨酱芝士'],
+    defaultGrams: 20, unit: '份',
+    protein: 4, carbs: 0.5, fat: 6, // 80kcal/20g 推算
+    isRawWeight: false,
+    note: '饿梨酱官方 80kcal/20g',
+  },
+
   // ─── 主食/干货（per100g 生重/干重） ─────────────────────────────
   'rice-dry': {
     aliases: ['大米', '白米', '粳米'],
