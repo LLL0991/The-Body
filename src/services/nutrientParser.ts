@@ -1104,6 +1104,8 @@ export interface MealRecommendationItemsInput {
   trainingModeLabel?: string
   /** 早餐时：true 表示用户点击了刷新，希望看到替代方案而非固定组合 */
   preferBreakfastAlternative?: boolean
+  /** 用户连续刷新多次：明确不想吃超级碗，本次强制避开超级碗相关方案 */
+  avoidSuperBowl?: boolean
 }
 
 export interface MealRecommendationItem {
@@ -1146,10 +1148,13 @@ export async function getMealRecommendationItems(
     trainingModeLabel: input.trainingModeLabel ?? undefined,
   })
   systemPrompt = systemPrompt.replace(/\{\{SUPER_BOWL_DATA\}\}/g, formatSuperBowlDataForPrompt())
+  if (input.avoidSuperBowl) {
+    systemPrompt += `\n\n## 本次额外硬约束（必须遵守）\n- 用户已连续刷新两次：明确不想吃「超级碗」。本次严禁推荐/输出任何「超级碗」相关方案或食材组合。\n- 请在食堂/日料/韩料/越南菜/自炊（空气炸锅/电饭锅/炒锅 30 分钟内）中选择一个具体、可执行的替代方案。\n- 仍需满足：在 remaining 额度内、食材多样性、易买易做、减脂友好。`
+  }
 
   const trainingLabel = (input.trainingModeLabel ?? '').trim() || '未知'
   const isRestDay = trainingLabel === '休息'
-  const userMessage =
+  const baseUserMessage =
     input.mealName === '早餐'
       ? input.preferBreakfastAlternative
         ? `请根据上述上下文，为本餐推荐一份搭配并返回 JSON。本餐为早餐，用户点击了刷新：请给一种「替代方案」（如希腊酸奶+蓝莓+燕麦、鸡蛋+全麦吐司+豆浆等），不要固定组合。advice 中必须写「今天${trainingLabel}」或训练日/休息日与当前训练模式一致。**必须返回非空 items 数组**，每项含 name、grams、protein、carbs、fat。`
@@ -1169,6 +1174,10 @@ export async function getMealRecommendationItems(
           : input.mealName === '练后即刻'
           ? `请根据上述上下文，为本餐推荐一份搭配并返回 JSON。本餐为**练后餐**：**优先推荐蛋白粉 30g**（用户固定方案，约 24g 蛋白）；若当前为训练日（早训/午训/晚练）且今日剩余碳水充足，可额外推荐香蕉或白米饭等快碳 30～50g。必须返回非空 items 数组，至少包含「康比特蛋白粉」或「蛋白粉」30g 一项。advice 与当前训练模式一致。`
           : '请根据上述上下文，为本餐推荐一份搭配并返回 JSON。若推荐超级碗，请在多种蛋白质、碳水底、蔬菜与酱汁中轮换选择，不要总推荐同一款。'
+
+  const userMessage = input.avoidSuperBowl
+    ? `${baseUserMessage}\n\n额外要求：用户已连续刷新两次，不想吃超级碗。本次输出 items 中**不得出现任何“超级碗/沙拉碗/超级碗数据库食材（如 混合谷物饭/融合油醋汁/果木烟熏鸡胸/亚麻籽油烤虾 等）”**。请给其他品类的具体搭配。`
+    : baseUserMessage
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (!useProxy && apiKey) headers.Authorization = `Bearer ${apiKey}`

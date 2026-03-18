@@ -168,6 +168,8 @@ export function MealDetailView({
       currentMonth: new Date().getMonth() + 1,
       trainingModeLabel,
       preferBreakfastAlternative: meal.name === '早餐' && recommendationRefreshKey > 0,
+      // 用户连续刷新 2 次，通常代表“不想吃超级碗了”，此时强制推荐其它可执行方案
+      avoidSuperBowl: meal.name !== '早餐' && recommendationRefreshKey >= 2,
     })
       .then((res) => {
         const next = { advice: res.advice || '', items: res.items || [] }
