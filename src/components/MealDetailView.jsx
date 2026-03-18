@@ -111,6 +111,14 @@ export function MealDetailView({
     return map[trainingMode] ?? '未知'
   }, [trainingMode])
 
+  // 午训的练前、晚练的练后：不需要「本餐还能吃什么」与「更多食材」扩展区，避免噪音
+  const shouldHideExtraSuggestions = useMemo(() => {
+    const name = String(meal?.name || '')
+    const isPreWorkout = /练前/.test(name)
+    const isPostWorkout = /练后/.test(name)
+    return (trainingModeLabel === '午训' && isPreWorkout) || (trainingModeLabel === '晚练' && isPostWorkout)
+  }, [meal?.name, trainingModeLabel])
+
   /** 午餐额度按训练模式：早训/午训时午餐略多（约 55%），晚练时午餐略少（约 45%），休息日 50%；勿差距过大，晚餐也须合理可吃 */
   const lunchShare =
     trainingModeLabel === '早训' || trainingModeLabel === '午训' ? 0.55
@@ -700,7 +708,7 @@ export function MealDetailView({
                 </li>
               ))}
             </ul>
-            {meal.name !== '练后即刻' && (
+            {!shouldHideExtraSuggestions && meal.name !== '练后即刻' && (
               <>
                 <button
                   type="button"
@@ -775,7 +783,7 @@ export function MealDetailView({
       )}
 
       {/* 快捷食材库：仅练后等非 AI 推荐餐显示，早餐/午餐/晚餐以「这顿吃什么？」AI 推荐为主 */}
-      {!isAiRecommendedMeal && others.length > 0 && (
+      {!isAiRecommendedMeal && !shouldHideExtraSuggestions && others.length > 0 && (
         <div>
           <button
             type="button"
