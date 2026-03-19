@@ -156,10 +156,11 @@ app.post('/api/image-to-meal-description', imageUpload.single('image'), async (r
     }
 
     const mime = req.file.mimetype || 'image/jpeg'
+    const safeMime = /jpeg|jpg|mpo/i.test(mime) ? 'image/jpeg' : mime
     const base64 = req.file.buffer.toString('base64')
 
     // 优先用 Gemini（识别更准，免费额度大）
-    const geminiText = await recognizeWithGemini(base64, mime)
+    const geminiText = await recognizeWithGemini(base64, safeMime)
     if (geminiText) {
       return res.json({ text: geminiText })
     }
@@ -169,7 +170,7 @@ app.post('/api/image-to-meal-description', imageUpload.single('image'), async (r
       return res.status(500).json({ error: '照片识别未配置：请在 .env 中设置 GEMINI_API_KEY 或 VITE_LLM_API_KEY' })
     }
 
-    const dataUrl = `data:${mime};base64,${base64}`
+    const dataUrl = `data:${safeMime};base64,${base64}`
     const modelsToTry = process.env.VITE_LLM_VISION_MODEL
       ? [LLM_VISION_MODEL]
       : isSiliconFlow
