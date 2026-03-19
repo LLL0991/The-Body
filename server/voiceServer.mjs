@@ -4,6 +4,7 @@ import cors from 'cors'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
+import sharp from 'sharp'
 
 dotenv.config()
 
@@ -156,8 +157,17 @@ app.post('/api/image-to-meal-description', imageUpload.single('image'), async (r
     }
 
     const mime = req.file.mimetype || 'image/jpeg'
-    const safeMime = /jpeg|jpg|mpo/i.test(mime) ? 'image/jpeg' : mime
-    const base64 = req.file.buffer.toString('base64')
+    let imageBuffer = req.file.buffer
+
+    // 统一转成 JPEG（处理 MPO/HEIC 等 iPhone 特殊格式）
+    try {
+      imageBuffer = await sharp(imageBuffer).jpeg({ quality: 85 }).toBuffer()
+    } catch (e) {
+      console.warn('[image] sharp 转换失败，使用原始数据', e?.message)
+    }
+
+    const base64 = imageBuffer.toString('base64')
+    const safeMime = 'image/jpeg'
 
     // 优先用 Gemini（识别更准，免费额度大）
     const geminiText = await recognizeWithGemini(base64, safeMime)
