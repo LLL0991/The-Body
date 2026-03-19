@@ -142,7 +142,10 @@ async function recognizeWithGemini(base64, mime) {
       }
       const data = JSON.parse(rawText)
       const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
-      if (text) return text
+      if (text) {
+        console.log(`[Gemini] ${model} 识别成功`)
+        return text
+      }
     } catch (e) {
       console.error(`[Gemini] ${model} exception`, e?.message)
     }
