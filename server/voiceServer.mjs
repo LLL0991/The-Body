@@ -175,60 +175,8 @@ app.post('/api/image-to-meal-description', imageUpload.single('image'), async (r
       return res.json({ text: geminiText })
     }
 
-    // Gemini 不可用时降级到 SiliconFlow/OpenAI
-    if (!LLM_API_KEY) {
-      return res.status(500).json({ error: '照片识别未配置：请在 .env 中设置 GEMINI_API_KEY 或 VITE_LLM_API_KEY' })
-    }
-
-    const dataUrl = `data:${safeMime};base64,${base64}`
-    const modelsToTry = process.env.VITE_LLM_VISION_MODEL
-      ? [LLM_VISION_MODEL]
-      : isSiliconFlow
-        ? [...SILICONFLOW_VISION_FALLBACKS]
-        : [LLM_VISION_MODEL]
-
-    let lastErrText = ''
-    for (const model of modelsToTry) {
-      const body = {
-        model,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: IMAGE_DESCRIPTION_PROMPT },
-              { type: 'image_url', image_url: { url: dataUrl } },
-            ],
-          },
-        ],
-        max_tokens: 300,
-        temperature: 0.1,
-      }
-
-      const resp = await fetch(`${LLM_BASE_URL}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${LLM_API_KEY}` },
-        body: JSON.stringify(body),
-      })
-
-      lastErrText = await resp.text()
-
-      if (resp.ok) {
-        const data = JSON.parse(lastErrText)
-        const content = data?.choices?.[0]?.message?.content
-        const text = (typeof content === 'string' ? content : '').trim()
-        if (text) return res.json({ text })
-        lastErrText = '模型未返回餐食描述'
-      }
-
-      console.warn(`[SiliconFlow] ${model} failed:`, lastErrText.slice(0, 150))
-      // 始终尝试下一个模型
-    }
-
-    let msg = lastErrText.slice(0, 400)
-    if (isModelNotFound(msg)) {
-      msg += ' 请在 .env 中设置 VITE_LLM_VISION_MODEL 为你在控制台可见的视觉模型。'
-    }
-    return res.status(500).json({ error: `视觉模型请求失败: ${msg}` })
+    // Gemini 不可用时返回友好提示
+    return res.status(503).json({ error: 'Gemini 视觉识别暂时达到频率限制，请稍等1分钟后重试' })
   } catch (err) {
     console.error('[voiceServer] image-to-meal-description error', err)
     return res.status(500).json({ error: err?.message || '照片识别失败' })
