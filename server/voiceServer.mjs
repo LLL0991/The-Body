@@ -98,7 +98,7 @@ const SILICONFLOW_VISION_FALLBACKS = [
 ]
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
-const GEMINI_VISION_MODEL = 'gemini-1.5-flash'
+const GEMINI_VISION_MODEL = 'gemini-2.0-flash'
 
 const IMAGE_DESCRIPTION_PROMPT = `你是一位专业营养师助手，请识别图中所有食物，逐项列出食物名称和估算克数。
 格式要求：每项食物单独一行，格式为「食物名 克数g」，例如：
