@@ -99,6 +99,7 @@ const SILICONFLOW_VISION_FALLBACKS = [
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 const GEMINI_VISION_MODEL = 'gemini-2.0-flash'
+const GEMINI_VISION_FALLBACK = 'gemini-2.0-flash-lite'
 
 const IMAGE_DESCRIPTION_PROMPT = `你是一位专业营养师助手，请识别图中所有食物，逐项列出食物名称和估算克数。
 格式要求：每项食物单独一行，格式为「食物名 克数g」，例如：
@@ -115,35 +116,37 @@ function isModelNotFound(errText) {
 // Gemini 图片识别
 async function recognizeWithGemini(base64, mime) {
   if (!GEMINI_API_KEY) return null
-  try {
-    const safeMime = /jpeg|jpg|mpo/i.test(mime) ? 'image/jpeg' : mime
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_VISION_MODEL}:generateContent?key=${GEMINI_API_KEY}`
-    const body = {
-      contents: [{
-        parts: [
-          { text: IMAGE_DESCRIPTION_PROMPT },
-          { inline_data: { mime_type: safeMime, data: base64 } },
-        ],
-      }],
-      generationConfig: { temperature: 0.1, maxOutputTokens: 300 },
+  const safeMime = /jpeg|jpg|mpo/i.test(mime) ? 'image/jpeg' : mime
+  for (const model of [GEMINI_VISION_MODEL, GEMINI_VISION_FALLBACK]) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`
+      const body = {
+        contents: [{
+          parts: [
+            { text: IMAGE_DESCRIPTION_PROMPT },
+            { inline_data: { mime_type: safeMime, data: base64 } },
+          ],
+        }],
+        generationConfig: { temperature: 0.1, maxOutputTokens: 300 },
+      }
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const rawText = await resp.text()
+      if (!resp.ok) {
+        console.error(`[Gemini] ${model} error`, resp.status, rawText.slice(0, 200))
+        continue
+      }
+      const data = JSON.parse(rawText)
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+      if (text) return text
+    } catch (e) {
+      console.error(`[Gemini] ${model} exception`, e?.message)
     }
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const rawText = await resp.text()
-    if (!resp.ok) {
-      console.error('[Gemini] error', resp.status, rawText.slice(0, 300))
-      return null
-    }
-    const data = JSON.parse(rawText)
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
-    return text || null
-  } catch (e) {
-    console.error('[Gemini] exception', e?.message)
-    return null
   }
+  return null
 }
 
 app.post('/api/image-to-meal-description', imageUpload.single('image'), async (req, res) => {
