@@ -218,11 +218,10 @@ app.post('/api/image-to-meal-description', imageUpload.single('image'), async (r
         const text = (typeof content === 'string' ? content : '').trim()
         if (text) return res.json({ text })
         lastErrText = '模型未返回餐食描述'
-        continue
       }
 
-      if (isModelNotFound(lastErrText) && modelsToTry.indexOf(model) < modelsToTry.length - 1) continue
-      break
+      console.warn(`[SiliconFlow] ${model} failed:`, lastErrText.slice(0, 150))
+      // 始终尝试下一个模型
     }
 
     let msg = lastErrText.slice(0, 400)
