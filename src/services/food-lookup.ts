@@ -27,12 +27,26 @@ export const lookupFood = async (query: string): Promise<FoodLookupResult> => {
 
 // ─── 本地库查询 ───────────────────────────────────────────────
 const searchLocalDatabase = (query: string): { entry: FoodEntry; matchedAlias: string } | null => {
-  const text = query || ''
+  const text = (query || '').trim()
+  if (!text) return null
+
+  // 重要：使用 includes 时可能出现“鸡蛋饼包含鸡蛋”的前缀/包含冲突。
+  // 这里选择「别名长度最长」的命中，降低误匹配概率。
+  let best: { entry: FoodEntry; matchedAlias: string } | null = null
+  let bestLen = -1
+
   for (const entry of Object.values(FOOD_DATABASE)) {
-    const matched = entry.aliases.find((alias) => text.includes(alias))
-    if (matched) return { entry, matchedAlias: matched }
+    for (const alias of entry.aliases) {
+      if (!alias) continue
+      if (!text.includes(alias)) continue
+      if (alias.length > bestLen) {
+        bestLen = alias.length
+        best = { entry, matchedAlias: alias }
+      }
+    }
   }
-  return null
+
+  return best
 }
 
 // ─── 远程 API 查询 ────────────────────────────────────────────
