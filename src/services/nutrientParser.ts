@@ -520,6 +520,10 @@ export async function parseMealInput(
   currentMealType: MealType,
   options: ParseMealInputOptions = {}
 ): Promise<NutrientParseResult> {
+  const textLower = String(text || '').toLowerCase()
+  // 支持「两个鸡蛋不含蛋黄 / 无蛋黄 / 去蛋黄 / 只吃蛋清」这类常见表达
+  const wantsEggWhiteOnly = /(不含蛋黄|无蛋黄|去蛋黄|去掉蛋黄|只要蛋清|只吃蛋清)/.test(textLower)
+
   // 先尝试命中超级碗等固定套餐，命中则直接按数据库展开并跳过 LLM
   const superBowlCombo = tryBuildSuperBowlComboFromText(text)
   if (superBowlCombo) return superBowlCombo
@@ -637,7 +641,20 @@ export async function parseMealInput(
 
   const enrichedItems = await Promise.all(
     structureItems.map(async (it) => {
-      const lookup = await lookupFood(it.query)
+      const rawQuery = String(it.query || it.name || '')
+      let lookupQuery = rawQuery
+      let gramsForCalc = it.grams
+      let displayName = it.name
+
+      // 若用户明确“不含蛋黄”，且结构层仍识别为“鸡蛋/全蛋”，则强制替换为“蛋清”
+      if (wantsEggWhiteOnly && /(鸡蛋|全蛋)/.test(rawQuery) && !/蛋清/.test(rawQuery)) {
+        lookupQuery = '蛋清'
+        displayName = '蛋清'
+        // 估算：整蛋 55g -> 蛋清约 33g（比例 33/55）
+        gramsForCalc = Math.max(0, Math.round(gramsForCalc * (33 / 55) * 10) / 10)
+      }
+
+      const lookup = await lookupFood(lookupQuery)
       const per100 = lookup.entry
       let proteinPer100 = per100?.protein ?? 0
       let carbsPer100 = per100?.carbs ?? 0
@@ -672,13 +689,13 @@ export async function parseMealInput(
         }
       }
 
-      const multiplier = it.grams / 100
+      const multiplier = gramsForCalc / 100
       const protein = Math.round(proteinPer100 * multiplier * 10) / 10
       const carbs = Math.round(carbsPer100 * multiplier * 10) / 10
       const fat = Math.round(fatPer100 * multiplier * 10) / 10
       return {
-        name: it.name,
-        grams: it.grams,
+        name: displayName,
+        grams: gramsForCalc,
         isRawWeight: it.isRawWeight,
         cookedPerRawRatio,
         protein,

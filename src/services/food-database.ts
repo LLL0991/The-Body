@@ -171,6 +171,31 @@ export const FOOD_DATABASE: Record<string, FoodEntry> = {
     protein: 13, carbs: 1.1, fat: 9,
     isRawWeight: false,
   },
+
+  // ─── 蛋清（不含蛋黄场景）────────────────────────────────
+  'egg-white': {
+    aliases: [
+      '蛋清',
+      '不含蛋黄',
+      '无蛋黄',
+      '去蛋黄',
+      '去掉蛋黄',
+      '只要蛋清',
+      '只吃蛋清',
+    ],
+    // 估算：1 个蛋白约 33g（整蛋 55g 的常见拆分比例）
+    defaultGrams: 33,
+    unit: '个',
+    perPieceGrams: 33,
+    // 估算（常见营养数据）：per 100g 蛋清 P≈10.9 / C≈0.7 / F≈0.2
+    protein: 10.9,
+    carbs: 0.7,
+    fat: 0.2,
+    // 用 cookedPerRawRatio=1 保证生/熟口径不二次换算导致偏差
+    isRawWeight: false,
+    cookedPerRawRatio: 1,
+    note: '蛋清（仅蛋白/无蛋黄）估算：按常见营养数据录入'
+  },
   'salmon': {
     aliases: ['三文鱼', '三文鱼片', '烟熏三文鱼'],
     defaultGrams: 150, unit: '份',
