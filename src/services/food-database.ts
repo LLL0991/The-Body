@@ -544,6 +544,27 @@ export const FOOD_DATABASE: Record<string, FoodEntry> = {
     cookedPerRawRatio: 0.95,
   },
 
+  // ─── 汤品（熟食/可食用） ─────────────────────────────────
+  'soup-hulatang-vegetarian': {
+    aliases: ['素胡辣汤', '胡辣汤（素）', '胡辣汤(素）'],
+    defaultGrams: 450, unit: '碗',
+    // 来自你截图的「每 100g」营养：38kcal / P 2.8g / C 2.6g / F 1.9g
+    protein: 2.8, carbs: 2.6, fat: 1.9,
+    isRawWeight: false,
+    note: '素胡辣汤：不含宽粉/粉条/面条/牛肉（按可食用口径）',
+  },
+
+  // ─── 面饼/煎饼（熟食/可食用） ─────────────────────────────────
+  'egg-pancake': {
+    aliases: ['鸡蛋饼'],
+    defaultGrams: 180, unit: '份',
+    // 来自你截图：每 180g
+    // P 13.2g / C 38.2g / F 12.0g，换算每100g：P 7.3 / C 21.2 / F 6.7
+    protein: 7.3, carbs: 21.2, fat: 6.7,
+    isRawWeight: false,
+    note: '鸡蛋饼（按截图营养标签录入）',
+  },
+
   // ─── 坚果/油脂（可直接食用） ─────────────────────────────────
   'mixed-nuts': {
     aliases: ['坚果', '混合坚果'],

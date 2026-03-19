@@ -6,6 +6,7 @@
 import { SUPER_BOWL_DB, formatSuperBowlDataForPrompt, getSuperBowlPer100ForName } from '../data/superBowlDatabase'
 import { lookupFood } from './food-lookup'
 import { buildFoodParseSystemPrompt } from './parse-food-prompt'
+import { FOOD_DATABASE } from './food-database'
 
 /** 练后大餐碳水锚点：150g 熟米饭 ≈ 42g 碳水 */
 export const CARBS_ANCHOR_G = 42
@@ -1001,8 +1002,10 @@ ${USER_PERSONA_SUMMARY}
 用户点击刷新时可给「替代方案」：在家版 鸡蛋+燕麦+豆浆；外带版 全麦三明治+无糖豆浆；周末版 希腊酸奶+蓝莓+燕麦。advice 语气轻松，且与当前训练模式一致。
 
 ### 练前餐（香蕉）
-用户固定吃香蕉作为练前碳水（早练 100g / 晚练 87g），一般不需要推荐。
-若用户请求推荐或香蕉吃腻，提供等量碳水替代：替代选项 米糕 / 少量白米饭 / 椰枣 1～2 颗 / 运动能量胶；原则：快消化、低脂、碳水量对齐原方案
+练前餐必须符合“轻量快碳”的人类习惯：**最多 1～2 项**，以碳水为主、低脂、好消化，**严禁输出正餐级别堆叠**（如同时出现鸡腿/牛腩/牛肉酱/两份主蛋白/两种酱/热烹沙拉等）。
+- 早训/午训：默认就是 **香蕉 100g**（只输出 1 项即可）
+- 晚练：若用户想吃超级碗，也只能给 **一个标准超级碗组合**（单主蛋白+低卡酱），不得额外叠加第二份主菜/牛肉酱
+若用户请求替代或香蕉吃腻：只给等量碳水替代（米糕 / 少量白米饭 / 椰枣 1～2 颗 / 运动能量胶），原则：快消化、低脂、碳水量对齐原方案
 
 ### 练后餐
 用户固定方案：蛋白粉 30g（即刻）。AI 职责：根据当前是否为训练日判断是否需要额外补充碳水。
@@ -1240,6 +1243,8 @@ export interface MealRecommendationItemsInput {
   todayEatenFoods?: string[]
   /** 当前月份 1–12，不传则用系统当前月 */
   currentMonth?: number
+  /** 推荐刷新次数（用于轮换方案；0 表示首次） */
+  refreshKey?: number
   /** 是否训练日（休息日为 false） */
   isTrainingDay?: boolean
   /** 训练部位：胸/腿/背/肩/手臂/未知 */
@@ -1274,6 +1279,117 @@ export async function getMealRecommendationItems(
   input: MealRecommendationItemsInput,
   options: ParseMealInputOptions = {}
 ): Promise<MealRecommendationItemsResult> {
+  // 练前餐：强约束为“轻量快碳”，避免模型输出正餐级别堆叠；同时覆盖用户晚练常吃超级碗的习惯。
+  const mealName = String(input?.mealName || '')
+  const trainingLabelEarly = (input.trainingModeLabel ?? '').trim() || '未知'
+  const isPreWorkoutMeal = /练前/.test(mealName)
+  if (isPreWorkoutMeal) {
+    const k = Number(input.refreshKey) || 0
+    const makeItem = (
+      name: string,
+      grams: number,
+      per100: { protein: number; carbs: number; fat: number }
+    ): MealRecommendationItem => {
+      const factor = grams / 100
+      return {
+        name,
+        grams,
+        protein: Math.round(per100.protein * factor * 10) / 10,
+        carbs: Math.round(per100.carbs * factor * 10) / 10,
+        fat: Math.round(per100.fat * factor * 10) / 10,
+      }
+    }
+    const sumTotals = (items: MealRecommendationItem[]) =>
+      items.reduce(
+        (acc, it) => ({ protein: acc.protein + it.protein, carbs: acc.carbs + it.carbs, fat: acc.fat + it.fat }),
+        { protein: 0, carbs: 0, fat: 0 }
+      )
+
+    const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n))
+    const scaleItemsToFitRemaining = (items: MealRecommendationItem[]) => {
+      const totals = sumTotals(items)
+      const r = input.remaining
+      const ratios: number[] = []
+      if (totals.carbs > 0) ratios.push(r.carbs / totals.carbs)
+      if (totals.protein > 0) ratios.push(r.protein / totals.protein)
+      if (totals.fat > 0) ratios.push(r.fat / totals.fat)
+      const ratio = clamp(Math.min(...ratios.filter((x) => Number.isFinite(x) && x > 0), 1), 0.1, 1)
+      if (ratio >= 0.999) return items
+      return items.map((it) => ({
+        ...it,
+        grams: Math.max(5, Math.round((it.grams * ratio) / 5) * 5),
+        protein: Math.round(it.protein * ratio * 10) / 10,
+        carbs: Math.round(it.carbs * ratio * 10) / 10,
+        fat: Math.round(it.fat * ratio * 10) / 10,
+      }))
+    }
+
+    // 若用户连续刷新两次（不想吃超级碗），练前也尊重：回到香蕉/快碳。
+    const shouldAvoidSuperBowl = !!input.avoidSuperBowl
+
+    // 午训/早训练前：更像“加一份快碳”，不应是一顿正餐。刷新时轮换可执行替代。
+    if (trainingLabelEarly === '午训' || trainingLabelEarly === '早训' || shouldAvoidSuperBowl || trainingLabelEarly === '休息') {
+      const banana = FOOD_DATABASE['banana']
+      const rice = FOOD_DATABASE['steamed-rice']
+      const onigiri = FOOD_DATABASE['family-mart-onigiri']
+      const variants: { label: string; items: MealRecommendationItem[] }[] = [
+        { label: '香蕉', items: [makeItem('香蕉', 100, { protein: banana.protein, carbs: banana.carbs, fat: banana.fat })] },
+        { label: '白米饭小份', items: [makeItem('白米饭', 90, { protein: rice.protein, carbs: rice.carbs, fat: rice.fat })] },
+        { label: '饭团', items: [makeItem('全家饭团', 130, { protein: onigiri.protein, carbs: onigiri.carbs, fat: onigiri.fat })] },
+      ]
+      const picked = variants[k % variants.length]
+      const items = scaleItemsToFitRemaining(picked.items)
+      const totals = sumTotals(items)
+      return {
+        meal: '练前餐',
+        mode: '保底',
+        items,
+        totals: {
+          protein: Math.round(totals.protein * 10) / 10,
+          carbs: Math.round(totals.carbs * 10) / 10,
+          fat: Math.round(totals.fat * 10) / 10,
+        },
+        advice:
+          trainingLabelEarly === '休息'
+            ? `今天休息日，练前餐可不吃；若想补点快碳，用「${picked.label}」就够。`
+            : `今天${trainingLabelEarly}，练前只补一份快碳（${picked.label}），低脂好消化，留胃口给练后正餐。`,
+      }
+    }
+
+    // 晚练练前：用户通常会吃一个超级碗套餐 → 给一个“标准且不堆叠”的超级碗组合（单主蛋白 + 低卡酱）。
+    const pick = (name: string, grams: number) => {
+      const per100 = getSuperBowlPer100ForName(name)
+      if (!per100) return null
+      return makeItem(name, grams, {
+        protein: per100.proteinPer100,
+        carbs: per100.carbsPer100,
+        fat: per100.fatPer100,
+      })
+    }
+    const proteinChoices = ['果木烟熏鸡胸', '日式七味豆腐', '亚麻籽油烤虾', '油浸金枪鱼'] as const
+    const proteinName = proteinChoices[k % proteinChoices.length]
+    const items = [
+      pick('混合谷物饭', 200),
+      pick(proteinName, 100),
+      pick('混合沙拉叶', 90),
+      pick('混合烤蔬菜', 100),
+      pick('融合油醋汁', 30),
+    ].filter(Boolean) as MealRecommendationItem[]
+    const scaled = scaleItemsToFitRemaining(items)
+    const totals = sumTotals(scaled)
+    return {
+      meal: '练前餐',
+      mode: '外卖',
+      items: scaled,
+      totals: {
+        protein: Math.round(totals.protein * 10) / 10,
+        carbs: Math.round(totals.carbs * 10) / 10,
+        fat: Math.round(totals.fat * 10) / 10,
+      },
+      advice: `今天晚练，练前按一个超级碗标准份来：${proteinName} + 低卡油醋汁；不要再加第二份主菜或牛肉酱。`,
+    }
+  }
+
   const envConfig = getEnvConfig()
   const apiKey = options.apiKey ?? envConfig.apiKey
   const useProxy = envConfig.useProxy && !options.apiKey && !options.baseUrl

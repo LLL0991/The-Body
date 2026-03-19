@@ -34,11 +34,13 @@ export function MealDetailView({
   trainingMode,
   TRAINING_MODES,
 }) {
-  /** 早餐/午餐/晚餐 + 各模式练后餐（练后即刻、练后午餐、练后摄入）显示「这顿吃什么？」AI 推荐 */
+  /** 早餐/午餐/晚餐 + 练前餐 + 各模式练后餐（练后即刻、练后午餐、练后摄入）显示「这顿吃什么？」AI 推荐 */
+  const isPreWorkoutMeal = /练前/.test(String(meal?.name || ''))
   const isAiRecommendedMeal =
     meal.name === '早餐' ||
     meal.name === '午餐' ||
     meal.name === '晚餐' ||
+    isPreWorkoutMeal ||
     meal.name === '练后即刻' ||
     meal.name === '练后午餐' ||
     meal.name === '练后摄入'
@@ -104,6 +106,8 @@ export function MealDetailView({
   const [aiRecommendationItemsError, setAiRecommendationItemsError] = useState('')
   /** 仅切换餐次或点击「刷新推荐」时重新拉取；点击「采用推荐」不会触发重新拉取 */
   const [recommendationRefreshKey, setRecommendationRefreshKey] = useState(0)
+  /** 「这顿吃什么？」默认收起；用户点击展开后才请求 AI 推荐 */
+  const [aiRecommendationExpanded, setAiRecommendationExpanded] = useState(false)
 
   const trainingModeLabel = useMemo(() => {
     if (!trainingMode) return '未知'
@@ -147,6 +151,7 @@ export function MealDetailView({
   /** 仅切换餐次或点击「刷新推荐」时拉取；不依赖 remaining/consumed，避免「采用推荐」后误触发重新拉取 */
   useEffect(() => {
     if (!isAiRecommendedMeal) return
+    if (!aiRecommendationExpanded) return
     // 若有缓存且当前是首次进入（refresh key=0），直接用缓存结果，避免重复请求
     if (aiCacheKey && recommendationRefreshKey === 0 && typeof window !== 'undefined') {
       try {
@@ -174,6 +179,7 @@ export function MealDetailView({
       },
       todayEatenFoods,
       currentMonth: new Date().getMonth() + 1,
+      refreshKey: recommendationRefreshKey,
       trainingModeLabel,
       preferBreakfastAlternative: meal.name === '早餐' && recommendationRefreshKey > 0,
       // 用户连续刷新 2 次，通常代表“不想吃超级碗了”，此时强制推荐其它可执行方案
@@ -195,7 +201,12 @@ export function MealDetailView({
         setAiRecommendationItems({ advice: '', items: [] })
       })
       .finally(() => setAiRecommendationItemsLoading(false))
-  }, [isAiRecommendedMeal, meal.name, trainingModeLabel, recommendationRefreshKey])
+  }, [isAiRecommendedMeal, meal.name, trainingModeLabel, recommendationRefreshKey, aiRecommendationExpanded])
+
+  // 切换餐次时默认收起，避免首次进入就触发 AI
+  useEffect(() => {
+    setAiRecommendationExpanded(false)
+  }, [meal.name, trainingModeLabel])
 
   const refreshRecommendation = useCallback(() => {
     setRecommendationRefreshKey((k) => k + 1)
@@ -550,11 +561,46 @@ export function MealDetailView({
 
       {/* 这顿吃什么？：早餐/午餐/晚餐/练后即刻 = AI 推荐列表 + 采用推荐（练后即刻优先推荐蛋白粉）；其他餐 = 当前已选 + 本餐还能吃什么 */}
       <div className="rounded-xl border border-[#404040] overflow-hidden">
-        <div className="bg-[#393939] px-3 py-2 text-[11px] uppercase tracking-wide text-zinc-500">
-          这顿吃什么？
+        <div className="flex items-center justify-between bg-[#393939] px-3 py-2">
+          <div className="text-[11px] uppercase tracking-wide text-zinc-500">这顿吃什么？</div>
+          {isAiRecommendedMeal && (
+            <button
+              type="button"
+              onClick={() => setAiRecommendationExpanded((v) => !v)}
+              className="rounded-md p-1.5 text-[#FF3D3C] hover:bg-[#323232]"
+              title={aiRecommendationExpanded ? '收起推荐' : '展开推荐并生成'}
+              aria-label={aiRecommendationExpanded ? '收起推荐' : '展开推荐并生成'}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                className="transition-transform"
+                style={{ transform: aiRecommendationExpanded ? 'rotate(180deg)' : 'none' }}
+              >
+                <path
+                  d="M5 9L12 16L19 9"
+                  stroke="currentColor"
+                  strokeWidth="5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          )}
         </div>
         {isAiRecommendedMeal ? (
           <>
+            {!aiRecommendationExpanded ? (
+              <div className="border-b border-[#404040] bg-[#323232] px-3 py-3">
+                <p className="text-[12px] leading-relaxed text-zinc-300">
+                  点击右上角「展开」，再生成今日{meal.name}推荐。
+                </p>
+              </div>
+            ) : (
+              <>
             {aiRecommendationItemsLoading && (
               <div className="px-4 py-4 text-[13px] text-zinc-500">正在生成{meal.name}推荐…</div>
             )}
@@ -611,6 +657,8 @@ export function MealDetailView({
                   </button>
                 </div>
               </div>
+            )}
+              </>
             )}
             {meal.ingredients.length > 0 ? (
               <div className="px-3 py-2">
