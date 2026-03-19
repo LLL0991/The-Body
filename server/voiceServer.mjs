@@ -116,7 +116,6 @@ function isModelNotFound(errText) {
 async function recognizeWithGemini(base64, mime) {
   if (!GEMINI_API_KEY) return null
   try {
-    // MPO（iPhone 双摄格式）本质是 JPEG，强制当 JPEG 处理
     const safeMime = /jpeg|jpg|mpo/i.test(mime) ? 'image/jpeg' : mime
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_VISION_MODEL}:generateContent?key=${GEMINI_API_KEY}`
     const body = {
@@ -133,11 +132,16 @@ async function recognizeWithGemini(base64, mime) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
-    if (!resp.ok) return null
-    const data = await resp.json()
+    const rawText = await resp.text()
+    if (!resp.ok) {
+      console.error('[Gemini] error', resp.status, rawText.slice(0, 300))
+      return null
+    }
+    const data = JSON.parse(rawText)
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
     return text || null
-  } catch {
+  } catch (e) {
+    console.error('[Gemini] exception', e?.message)
     return null
   }
 }
