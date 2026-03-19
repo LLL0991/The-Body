@@ -22,7 +22,7 @@ const upload = multer({
 
 const imageUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB for images
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB for images
   fileFilter: (req, file, cb) => {
     const ok = /^image\/(jpeg|png|webp|gif|mpo)$/i.test(file.mimetype)
     if (ok) cb(null, true)
