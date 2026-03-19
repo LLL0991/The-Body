@@ -24,7 +24,7 @@ const imageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB for images
   fileFilter: (req, file, cb) => {
-    const ok = /^image\/(jpeg|png|webp|gif)$/i.test(file.mimetype)
+    const ok = /^image\/(jpeg|png|webp|gif|mpo)$/i.test(file.mimetype)
     if (ok) cb(null, true)
     else cb(new Error('仅支持图片：JPEG/PNG/WebP/GIF'), false)
   },
@@ -116,12 +116,14 @@ function isModelNotFound(errText) {
 async function recognizeWithGemini(base64, mime) {
   if (!GEMINI_API_KEY) return null
   try {
+    // MPO（iPhone 双摄格式）本质是 JPEG，强制当 JPEG 处理
+    const safeMime = /jpeg|jpg|mpo/i.test(mime) ? 'image/jpeg' : mime
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_VISION_MODEL}:generateContent?key=${GEMINI_API_KEY}`
     const body = {
       contents: [{
         parts: [
           { text: IMAGE_DESCRIPTION_PROMPT },
-          { inline_data: { mime_type: mime, data: base64 } },
+          { inline_data: { mime_type: safeMime, data: base64 } },
         ],
       }],
       generationConfig: { temperature: 0.1, maxOutputTokens: 300 },
