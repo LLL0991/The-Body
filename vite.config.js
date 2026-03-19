@@ -19,9 +19,10 @@ export default defineConfig({
           })
         },
       },
-      // 语音识别 + 拍照识别：转发到本地 voice-server，实现「一个网址」访问
+      // 语音识别 + 拍照识别 + 食物查询：转发到本地 voice-server，实现「一个网址」访问
       '/api/voice-to-text': { target: 'http://localhost:5175', changeOrigin: true },
       '/api/image-to-meal-description': { target: 'http://localhost:5175', changeOrigin: true },
+      '/api/food': { target: 'http://localhost:5175', changeOrigin: true },
     },
   },
 })

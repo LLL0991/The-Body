@@ -187,6 +187,111 @@ app.post('/api/image-to-meal-description', imageUpload.single('image'), async (r
   }
 })
 
+// ---------- 临时：查询服务器出口 IP（用完删掉）----------
+app.get('/api/myip', async (req, res) => {
+  try {
+    const r = await fetch('https://ifconfig.me')
+    const ip = (await r.text()).trim()
+    res.json({ ip })
+  } catch (e) {
+    res.status(500).json({ error: e?.message })
+  }
+})
+
+// ---------- FatSecret 食物搜索（OAuth 2.0 client_credentials）----------
+const FATSECRET_CLIENT_ID = process.env.FATSECRET_CLIENT_ID
+const FATSECRET_CLIENT_SECRET = process.env.FATSECRET_CLIENT_SECRET
+
+// 内存缓存 token，避免每次请求都重新获取（token 有效期 86400s）
+let fsToken = null
+let fsTokenExpiresAt = 0
+
+async function getFatSecretToken() {
+  if (fsToken && Date.now() < fsTokenExpiresAt - 60_000) return fsToken
+  const creds = Buffer.from(`${FATSECRET_CLIENT_ID}:${FATSECRET_CLIENT_SECRET}`).toString('base64')
+  const resp = await fetch('https://oauth.fatsecret.com/connect/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: `Basic ${creds}`,
+    },
+    body: 'grant_type=client_credentials&scope=basic',
+  })
+  if (!resp.ok) throw new Error(`FatSecret token 获取失败: ${await resp.text()}`)
+  const data = await resp.json()
+  fsToken = data.access_token
+  fsTokenExpiresAt = Date.now() + (data.expires_in || 86400) * 1000
+  return fsToken
+}
+
+// 解析 food_description 字段，标准化为每 100g 的 P/C/F
+// 格式示例：
+//   "Per 100g - Calories: 130kcal | Fat: 2.50g | Carbs: 25.00g | Protein: 3.00g"
+//   "Per 1 serving (150g) - Calories: 195kcal | Fat: 3.75g | Carbs: 37.50g | Protein: 4.50g"
+function parseFatSecretDescription(desc) {
+  if (!desc) return null
+  const fat = parseFloat(/Fat:\s*([\d.]+)g/i.exec(desc)?.[1])
+  const carbs = parseFloat(/Carbs:\s*([\d.]+)g/i.exec(desc)?.[1])
+  const protein = parseFloat(/Protein:\s*([\d.]+)g/i.exec(desc)?.[1])
+  if (isNaN(fat) || isNaN(carbs) || isNaN(protein)) return null
+
+  // 提取 serving 克数（"Per 100g" 或 "Per 1 serving (150g)" 等格式）
+  const perGrams =
+    parseFloat(/Per\s+[\d./]+\s+\w+\s+\((\d+\.?\d*)g\)/i.exec(desc)?.[1]) ||
+    parseFloat(/Per\s+(\d+\.?\d*)g/i.exec(desc)?.[1]) ||
+    100
+
+  const factor = 100 / perGrams
+  return {
+    protein: Math.round(protein * factor * 10) / 10,
+    carbs: Math.round(carbs * factor * 10) / 10,
+    fat: Math.round(fat * factor * 10) / 10,
+  }
+}
+
+app.get('/api/food/search', async (req, res) => {
+  const query = (req.query.q || '').trim()
+  if (!query) return res.status(400).json({ error: '缺少参数 q' })
+  if (!FATSECRET_CLIENT_ID || !FATSECRET_CLIENT_SECRET) {
+    return res.status(500).json({ error: 'FatSecret 未配置' })
+  }
+  try {
+    const token = await getFatSecretToken()
+    const params = new URLSearchParams({
+      method: 'foods.search',
+      search_expression: query,
+      format: 'json',
+      max_results: '5',
+    })
+    const resp = await fetch(`https://platform.fatsecret.com/rest/server.api?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!resp.ok) return res.status(resp.status).json({ error: await resp.text() })
+    const data = await resp.json()
+
+    const foods = data?.foods?.food
+    const list = Array.isArray(foods) ? foods : foods ? [foods] : []
+
+    // 找第一条能解析出 P/C/F 的结果
+    for (const food of list) {
+      const macros = parseFatSecretDescription(food.food_description)
+      if (!macros) continue
+      return res.json({
+        name: food.food_name,
+        protein: macros.protein,
+        carbs: macros.carbs,
+        fat: macros.fat,
+        source: 'fatsecret',
+      })
+    }
+
+    return res.json(null) // 没有可用结果
+  } catch (err) {
+    console.error('[food/search]', err)
+    return res.status(500).json({ error: err?.message || 'FatSecret 查询失败' })
+  }
+})
+
 // ---------- 生产环境：LLM 代理（前端走 /api/llm 避免跨域与暴露 Key）----------
 const LLM_PROXY_BASE = process.env.VITE_LLM_BASE_URL || process.env.VITE_OPENAI_API_BASE || 'https://api.openai.com/v1'
 const LLM_PROXY_KEY = process.env.VITE_LLM_API_KEY || process.env.VITE_OPENAI_API_KEY
